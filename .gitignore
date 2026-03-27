@@ -1,0 +1,44 @@
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / OS files
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# Environment / local config
+.env
+.env.*
+
+# Project-generated prediction / analysis outputs
+
+pred_validation_npy/
+sequence_outputs/
+sequence_analysis/
+baseline_outputs/
+baseline_v2_out/
+baseline_v3_out/
+geometry_masks/
+geometry_overlay/
+geometry_result.csv
