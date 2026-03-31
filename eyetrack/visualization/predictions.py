@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from eyetrack.runtime import autocast_context
+
 
 def colorize_label_map(label_map: np.ndarray) -> np.ndarray:
     """
@@ -50,7 +52,8 @@ def visualize_predictions(
     dataloader,
     device: torch.device,
     save_dir: str,
-    num_samples: int = 12
+    num_samples: int = 12,
+    use_amp: bool = False,
 ) -> None:
     """
     summary: 保存验证集预测可视化结果
@@ -72,7 +75,8 @@ def visualize_predictions(
         masks = batch["mask"].to(device)
         sample_ids = batch["id"]
 
-        logits = model(images)
+        with autocast_context(device=device, use_amp=use_amp):
+            logits = model(images)
         preds = torch.argmax(logits, dim=1)
 
         batch_size = images.size(0)

@@ -8,7 +8,17 @@ from PIL import Image
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from eyetrack.config import (
+    DEFAULT_BASE_CHANNELS,
+    DEFAULT_IN_CHANNELS,
+    DEFAULT_INPUT_HEIGHT,
+    DEFAULT_INPUT_WIDTH,
+    DEFAULT_NUM_CLASSES,
+    DEFAULT_USE_AMP,
+)
+from eyetrack.data.preprocessing import preprocess_gray_image
 from eyetrack.models.unet import UNet
+from eyetrack.runtime import autocast_context, resolve_device
 from eyetrack.training.checkpoints import load_checkpoint_flexible
 
 
@@ -31,13 +41,15 @@ class SegmentationInferenceDataset(Dataset):
     return: 可供 DataLoader 使用的数据集对象
     """
 
-    def __init__(self, image_dir: str):
+    def __init__(self, image_dir: str, input_width: int = DEFAULT_INPUT_WIDTH, input_height: int = DEFAULT_INPUT_HEIGHT):
         """
         summary: 初始化推理数据集并收集图像路径
         param image_dir: 输入图像目录
         return: 无
         """
         self.image_dir = Path(image_dir)
+        self.input_width = input_width
+        self.input_height = input_height
 
         if not self.image_dir.exists():
             raise FileNotFoundError(f"找不到图像目录: {self.image_dir}")
@@ -78,29 +90,14 @@ class SegmentationInferenceDataset(Dataset):
         """
         image_path = self.image_paths[index]
         image = Image.open(image_path).convert("L")
-        image = np.array(image, dtype=np.float32) / 255.0
+        image = np.array(image, dtype=np.float32)
+        image = preprocess_gray_image(image=image, input_width=self.input_width, input_height=self.input_height)
         image_tensor = torch.from_numpy(image).unsqueeze(0).float()
 
         return {
             "image": image_tensor,
             "id": image_path.stem,
         }
-
-
-def resolve_device(device: str) -> torch.device:
-    """
-    summary: 根据字符串解析运行设备
-    param device: auto/cpu/cuda 或具体设备名
-    return: torch 设备对象
-    """
-    if device == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    if device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("当前环境不可用 CUDA，但传入了 --device cuda")
-
-    return torch.device(device)
-
 
 def resolve_image_dir(image_dir: str | None, root_dir: str | None, split: str) -> Path:
     """
@@ -127,10 +124,13 @@ def run_prediction_to_npy(
     split: str = "validation",
     batch_size: int = 1,
     num_workers: int = 0,
-    in_channels: int = 1,
-    num_classes: int = 4,
-    base_channels: int = 32,
-    device: str = "auto"
+    in_channels: int = DEFAULT_IN_CHANNELS,
+    num_classes: int = DEFAULT_NUM_CLASSES,
+    base_channels: int = DEFAULT_BASE_CHANNELS,
+    input_width: int = DEFAULT_INPUT_WIDTH,
+    input_height: int = DEFAULT_INPUT_HEIGHT,
+    use_amp: bool = DEFAULT_USE_AMP,
+    device: str = "auto",
 ) -> None:
     """
     summary: 执行分割模型推理并将预测标签保存为 npy
@@ -156,7 +156,11 @@ def run_prediction_to_npy(
     resolved_image_dir = resolve_image_dir(image_dir=image_dir, root_dir=root_dir, split=split)
     print("image_dir:", resolved_image_dir)
 
-    dataset = SegmentationInferenceDataset(image_dir=str(resolved_image_dir))
+    dataset = SegmentationInferenceDataset(
+        image_dir=str(resolved_image_dir),
+        input_width=input_width,
+        input_height=input_height,
+    )
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -187,7 +191,8 @@ def run_prediction_to_npy(
             images = batch["image"].to(torch_device)
             sample_ids = batch["id"]
 
-            logits = model(images)
+            with autocast_context(device=torch_device, use_amp=use_amp):
+                logits = model(images)
             preds = torch.argmax(logits, dim=1).detach().cpu().numpy().astype(np.uint8)
 
             for pred, sample_id in zip(preds, sample_ids):
@@ -215,9 +220,13 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--batch_size", type=int, default=1, help="推理批大小")
     parser.add_argument("--num_workers", type=int, default=0, help="DataLoader 进程数")
-    parser.add_argument("--in_channels", type=int, default=1, help="模型输入通道数")
-    parser.add_argument("--num_classes", type=int, default=4, help="模型输出类别数")
-    parser.add_argument("--base_channels", type=int, default=32, help="U-Net 基础通道数")
+    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="模型输入通道数")
+    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="模型输出类别数")
+    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net 基础通道数")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="模型输入宽度")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="模型输入高度")
+    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="启用 CUDA AMP 推理")
+    parser.add_argument("--no-amp", action="store_false", dest="amp", help="禁用 CUDA AMP 推理")
     parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
 
     return parser.parse_args()
@@ -242,6 +251,9 @@ def main() -> None:
         in_channels=args.in_channels,
         num_classes=args.num_classes,
         base_channels=args.base_channels,
+        input_width=args.input_width,
+        input_height=args.input_height,
+        use_amp=args.amp,
         device=args.device,
     )
 

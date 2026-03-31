@@ -5,6 +5,14 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from extract_geometry_from_segmentation import process_prediction_directory
+from eyetrack.config import (
+    DEFAULT_BASE_CHANNELS,
+    DEFAULT_IN_CHANNELS,
+    DEFAULT_INPUT_HEIGHT,
+    DEFAULT_INPUT_WIDTH,
+    DEFAULT_NUM_CLASSES,
+    DEFAULT_USE_AMP,
+)
 from eyetrack.workflows.predict import run_prediction_to_npy
 
 
@@ -63,9 +71,12 @@ def process_all_sequences(
     mask_root: Optional[str] = None,
     batch_size: int = 1,
     num_workers: int = 0,
-    in_channels: int = 1,
-    num_classes: int = 4,
-    base_channels: int = 32,
+    in_channels: int = DEFAULT_IN_CHANNELS,
+    num_classes: int = DEFAULT_NUM_CLASSES,
+    base_channels: int = DEFAULT_BASE_CHANNELS,
+    input_width: int = DEFAULT_INPUT_WIDTH,
+    input_height: int = DEFAULT_INPUT_HEIGHT,
+    use_amp: bool = DEFAULT_USE_AMP,
     device: str = "auto",
     iris_class_id: int = 2,
     pupil_class_id: int = 3,
@@ -140,6 +151,9 @@ def process_all_sequences(
             in_channels=in_channels,
             num_classes=num_classes,
             base_channels=base_channels,
+            input_width=input_width,
+            input_height=input_height,
+            use_amp=use_amp,
             device=device,
         )
 
@@ -180,9 +194,13 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--batch_size", type=int, default=1, help="推理批大小")
     parser.add_argument("--num_workers", type=int, default=0, help="DataLoader 进程数")
-    parser.add_argument("--in_channels", type=int, default=1, help="模型输入通道数")
-    parser.add_argument("--num_classes", type=int, default=4, help="模型输出类别数")
-    parser.add_argument("--base_channels", type=int, default=32, help="U-Net 基础通道数")
+    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="模型输入通道数")
+    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="模型输出类别数")
+    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net 基础通道数")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="模型输入宽度")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="模型输入高度")
+    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="启用 CUDA AMP 推理")
+    parser.add_argument("--no-amp", action="store_false", dest="amp", help="禁用 CUDA AMP 推理")
     parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
 
     parser.add_argument("--iris_class_id", type=int, default=2, help="iris 类别编号")
@@ -216,6 +234,9 @@ def main() -> None:
         in_channels=args.in_channels,
         num_classes=args.num_classes,
         base_channels=args.base_channels,
+        input_width=args.input_width,
+        input_height=args.input_height,
+        use_amp=args.amp,
         device=args.device,
         iris_class_id=args.iris_class_id,
         pupil_class_id=args.pupil_class_id,

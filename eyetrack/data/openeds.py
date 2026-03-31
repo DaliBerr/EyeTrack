@@ -6,6 +6,9 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
+from eyetrack.config import DEFAULT_INPUT_HEIGHT, DEFAULT_INPUT_WIDTH, DEFAULT_USE_MASK
+from eyetrack.data.preprocessing import preprocess_gray_image, resize_binary_mask, resize_label_map
+
 
 def read_gray_image(image_path: str) -> np.ndarray:
     """
@@ -49,7 +52,14 @@ class OpenEDSSegDataset(Dataset):
     return: 可供 PyTorch 读取的数据集对象
     """
 
-    def __init__(self, root_dir: str, split: str):
+    def __init__(
+        self,
+        root_dir: str,
+        split: str,
+        input_width: int = DEFAULT_INPUT_WIDTH,
+        input_height: int = DEFAULT_INPUT_HEIGHT,
+        use_mask: bool = DEFAULT_USE_MASK,
+    ):
         """
         summary: 初始化数据集并收集样本 id
         param root_dir: 数据集根目录
@@ -58,6 +68,9 @@ class OpenEDSSegDataset(Dataset):
         """
         self.root_dir = Path(root_dir)
         self.split = split
+        self.input_width = input_width
+        self.input_height = input_height
+        self.use_mask = use_mask
 
         self.image_dir = self.root_dir / split / "images"
         self.label_dir = self.root_dir / split / "labels"
@@ -67,7 +80,7 @@ class OpenEDSSegDataset(Dataset):
             raise FileNotFoundError(f"找不到图像目录: {self.image_dir}")
         if not self.label_dir.exists():
             raise FileNotFoundError(f"找不到标签目录: {self.label_dir}")
-        if not self.mask_dir.exists():
+        if self.use_mask and not self.mask_dir.exists():
             raise FileNotFoundError(f"找不到 mask 目录: {self.mask_dir}")
 
         self.sample_ids = self._collect_sample_ids()
@@ -77,7 +90,7 @@ class OpenEDSSegDataset(Dataset):
 
     def _collect_sample_ids(self) -> List[str]:
         """
-        summary: 收集同时拥有 image/label/mask 的样本编号
+        summary: 收集可用样本编号
         param self: 数据集实例
         return: 样本编号列表
         """
@@ -87,9 +100,17 @@ class OpenEDSSegDataset(Dataset):
         for image_path in image_paths:
             sample_id = image_path.stem
             label_path = self.label_dir / f"{sample_id}.npy"
-            mask_path = self.mask_dir / f"{sample_id}.png"
 
-            if label_path.exists() and mask_path.exists():
+            if not label_path.exists():
+                continue
+
+            if self.use_mask:
+                mask_path = self.mask_dir / f"{sample_id}.png"
+                if not mask_path.exists():
+                    continue
+
+                sample_ids.append(sample_id)
+            else:
                 sample_ids.append(sample_id)
 
         return sample_ids
@@ -102,7 +123,7 @@ class OpenEDSSegDataset(Dataset):
         """
         return len(self.sample_ids)
 
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor | str]:
         """
         summary: 读取单个样本并转为张量
         param index: 样本索引
@@ -112,19 +133,25 @@ class OpenEDSSegDataset(Dataset):
 
         image_path = self.image_dir / f"{sample_id}.png"
         label_path = self.label_dir / f"{sample_id}.npy"
-        mask_path = self.mask_dir / f"{sample_id}.png"
 
         image = read_gray_image(str(image_path))
         label = read_label_npy(str(label_path))
-        mask = read_mask_png(str(mask_path))
+
+        image = preprocess_gray_image(image=image, input_width=self.input_width, input_height=self.input_height)
+        label = resize_label_map(label=label, input_width=self.input_width, input_height=self.input_height)
 
         image_tensor = torch.from_numpy(image).unsqueeze(0).float()
         label_tensor = torch.from_numpy(label).long()
-        mask_tensor = torch.from_numpy(mask).bool()
-
-        return {
+        sample: Dict[str, torch.Tensor | str] = {
             "image": image_tensor,
             "label": label_tensor,
-            "mask": mask_tensor,
             "id": sample_id,
         }
+
+        if self.use_mask:
+            mask_path = self.mask_dir / f"{sample_id}.png"
+            mask = read_mask_png(str(mask_path))
+            mask = resize_binary_mask(mask=mask, input_width=self.input_width, input_height=self.input_height)
+            sample["mask"] = torch.from_numpy(mask).bool()
+
+        return sample

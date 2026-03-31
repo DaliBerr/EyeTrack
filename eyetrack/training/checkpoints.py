@@ -10,7 +10,8 @@ def save_full_checkpoint(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     best_val_loss: float,
-    save_path: str
+    save_path: str,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     summary: 保存完整 checkpoint 以支持断点续训
@@ -28,6 +29,7 @@ def save_full_checkpoint(
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "best_val_loss": best_val_loss,
+        "metadata": metadata or {},
     }
 
     torch.save(checkpoint, save_path)
@@ -73,6 +75,7 @@ def load_checkpoint_flexible(
             "best_val_loss": best_val_loss,
             "is_full_checkpoint": True,
             "optimizer_loaded": optimizer_loaded,
+            "metadata": checkpoint.get("metadata", {}),
         }
 
     if isinstance(checkpoint, dict):
@@ -87,6 +90,7 @@ def load_checkpoint_flexible(
             "best_val_loss": fallback_best_val_loss,
             "is_full_checkpoint": False,
             "optimizer_loaded": False,
+            "metadata": {},
         }
 
     raise ValueError(f"无法识别的 checkpoint 格式: {checkpoint_path}")
@@ -101,3 +105,18 @@ def save_checkpoint(model: nn.Module, save_path: str) -> None:
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model.state_dict(), save_path)
+
+
+def peek_checkpoint_metadata(checkpoint_path: str, device: torch.device | str = "cpu") -> Dict[str, Any]:
+    """
+    summary: 读取 checkpoint 中的元数据而不恢复模型
+    param checkpoint_path: checkpoint 路径
+    param device: torch.load 使用的 map_location
+    return: 元数据字典
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        return checkpoint.get("metadata", {})
+
+    return {}

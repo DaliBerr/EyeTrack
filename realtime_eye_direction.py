@@ -1,6 +1,8 @@
+import argparse
 import time
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
 import cv2
@@ -8,14 +10,25 @@ import numpy as np
 import torch
 from torch import nn
 
+from eyetrack.config import (
+    DEFAULT_IN_CHANNELS,
+    DEFAULT_BASE_CHANNELS,
+    DEFAULT_CHECKPOINT_PATH,
+    DEFAULT_INPUT_HEIGHT,
+    DEFAULT_INPUT_WIDTH,
+    DEFAULT_NUM_CLASSES,
+    DEFAULT_USE_AMP,
+)
+from eyetrack.data.preprocessing import ResizeMeta, preprocess_bgr_frame
 from eyetrack.models.unet import UNet
-from eyetrack.training.checkpoints import load_checkpoint_flexible
+from eyetrack.runtime import autocast_context, resolve_device
+from eyetrack.training.checkpoints import load_checkpoint_flexible, peek_checkpoint_metadata
 
 
 # =========================
 # 配置区
 # =========================
-CHECKPOINT_PATH = r"./checkpoints/best_unet_openeds.pth"
+CHECKPOINT_PATH = DEFAULT_CHECKPOINT_PATH
 CAMERA_INDEX = 1
 WINDOW_NAME = "Realtime Eye Direction Demo"
 
@@ -23,16 +36,14 @@ PREFERRED_CAMERA_WIDTH = 1280
 PREFERRED_CAMERA_HEIGHT = 720
 PREFERRED_CAMERA_FPS = 30
 
-MODEL_INPUT_WIDTH = 640
-MODEL_INPUT_HEIGHT = 400
+MODEL_INPUT_WIDTH = DEFAULT_INPUT_WIDTH
+MODEL_INPUT_HEIGHT = DEFAULT_INPUT_HEIGHT
 
 MIN_SELECTED_ROI_SIZE = 40
-MIN_PREPROCESS_ROI_WIDTH = 320
-MIN_PREPROCESS_ROI_HEIGHT = 200
-MAX_ROI_UPSCALE = 4.0
 
-BASE_CHANNELS = 32
-NUM_CLASSES = 4
+BASE_CHANNELS = DEFAULT_BASE_CHANNELS
+NUM_CLASSES = DEFAULT_NUM_CLASSES
+USE_AMP = DEFAULT_USE_AMP
 
 IRIS_CLASS_ID = 2
 PUPIL_CLASS_ID = 3
@@ -67,18 +78,6 @@ class RegionGeometry:
     center_x: Optional[float]
     center_y: Optional[float]
     ellipse: Optional[EllipseResult]
-
-
-@dataclass
-class PreprocessMeta:
-    source_width: int
-    source_height: int
-    roi_upscale: float
-    upscaled_width: int
-    upscaled_height: int
-    model_scale: float
-    pad_x: int
-    pad_y: int
 
 
 @dataclass
@@ -165,6 +164,17 @@ class OnlineEMAFilter:
 ROI_STATE = ROIInteractionState()
 
 
+@dataclass
+class RuntimeModelConfig:
+    checkpoint_path: str
+    in_channels: int
+    num_classes: int
+    base_channels: int
+    input_width: int
+    input_height: int
+    use_amp: bool
+
+
 # =========================
 # 鼠标交互
 # =========================
@@ -205,67 +215,23 @@ def configure_camera(cap: cv2.VideoCapture) -> Tuple[int, int, float]:
     return width, height, fps
 
 
-def compute_roi_upscale(source_width: int, source_height: int) -> float:
+def preprocess_frame(frame_bgr: np.ndarray, input_width: int, input_height: int) -> Tuple[np.ndarray, torch.Tensor, ResizeMeta]:
     """
-    summary: 若 ROI 太小则计算预放大倍数
-    param source_width: 原始 ROI 宽度
-    param source_height: 原始 ROI 高度
-    return: 预放大倍数
-    """
-    width_scale = MIN_PREPROCESS_ROI_WIDTH / max(source_width, 1)
-    height_scale = MIN_PREPROCESS_ROI_HEIGHT / max(source_height, 1)
-    return float(min(MAX_ROI_UPSCALE, max(1.0, width_scale, height_scale)))
-
-
-def preprocess_frame(frame_bgr: np.ndarray) -> Tuple[np.ndarray, torch.Tensor, PreprocessMeta]:
-    """
-    summary: 将 ROI 图像预处理为模型输入，小 ROI 时先尝试升分辨率
+    summary: 将 ROI 图像预处理为模型输入，采用与训练一致的 raw-resize 流程
     param frame_bgr: 输入 ROI 的 BGR 图像
     return: 灰度预览图、模型张量、预处理元信息
     """
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    source_height, source_width = gray.shape[:2]
-
-    roi_upscale = compute_roi_upscale(source_width, source_height)
-    if roi_upscale > 1.0:
-        upscaled_width = max(1, int(round(source_width * roi_upscale)))
-        upscaled_height = max(1, int(round(source_height * roi_upscale)))
-        gray = cv2.resize(gray, (upscaled_width, upscaled_height), interpolation=cv2.INTER_CUBIC)
-    else:
-        upscaled_width = source_width
-        upscaled_height = source_height
-
-    model_scale = min(MODEL_INPUT_WIDTH / upscaled_width, MODEL_INPUT_HEIGHT / upscaled_height)
-    resized_width = max(1, int(round(upscaled_width * model_scale)))
-    resized_height = max(1, int(round(upscaled_height * model_scale)))
-
-    resized = cv2.resize(gray, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
-
-    canvas = np.zeros((MODEL_INPUT_HEIGHT, MODEL_INPUT_WIDTH), dtype=np.uint8)
-    pad_x = (MODEL_INPUT_WIDTH - resized_width) // 2
-    pad_y = (MODEL_INPUT_HEIGHT - resized_height) // 2
-    canvas[pad_y:pad_y + resized_height, pad_x:pad_x + resized_width] = resized
-
-    tensor = torch.from_numpy(canvas.astype(np.float32) / 255.0).unsqueeze(0).unsqueeze(0)
-    meta = PreprocessMeta(
-        source_width=source_width,
-        source_height=source_height,
-        roi_upscale=roi_upscale,
-        upscaled_width=upscaled_width,
-        upscaled_height=upscaled_height,
-        model_scale=model_scale,
-        pad_x=pad_x,
-        pad_y=pad_y,
+    return preprocess_bgr_frame(
+        frame_bgr=frame_bgr,
+        input_width=input_width,
+        input_height=input_height,
     )
-    return gray, tensor, meta
 
 
 @torch.no_grad()
-def predict_label_map(model: nn.Module, input_tensor: torch.Tensor, device: torch.device) -> np.ndarray:
-    logits = model(input_tensor.to(device))
+def predict_label_map(model: nn.Module, input_tensor: torch.Tensor, device: torch.device, use_amp: bool) -> np.ndarray:
+    with autocast_context(device=device, use_amp=use_amp):
+        logits = model(input_tensor.to(device))
     pred = torch.argmax(logits, dim=1)[0].detach().cpu().numpy().astype(np.uint8)
     return pred
 
@@ -443,30 +409,25 @@ def extract_eye_geometry_from_label_map(pred_label_map: np.ndarray) -> Dict[str,
 # =========================
 # 可视化与坐标映射
 # =========================
-def map_point_to_frame(x: float, y: float, preprocess_meta: PreprocessMeta, roi_box: ROIBox) -> Tuple[int, int]:
-    upscaled_x = (x - preprocess_meta.pad_x) / max(preprocess_meta.model_scale, 1e-6)
-    upscaled_y = (y - preprocess_meta.pad_y) / max(preprocess_meta.model_scale, 1e-6)
-
-    source_x = upscaled_x / max(preprocess_meta.roi_upscale, 1e-6)
-    source_y = upscaled_y / max(preprocess_meta.roi_upscale, 1e-6)
-
-    source_x = float(np.clip(source_x, 0.0, max(preprocess_meta.source_width - 1.0, 0.0)))
-    source_y = float(np.clip(source_y, 0.0, max(preprocess_meta.source_height - 1.0, 0.0)))
+def map_point_to_frame(x: float, y: float, preprocess_meta: ResizeMeta, roi_box: ROIBox) -> Tuple[int, int]:
+    source_x = float(np.clip(x * preprocess_meta.scale_x, 0.0, max(preprocess_meta.source_width - 1.0, 0.0)))
+    source_y = float(np.clip(y * preprocess_meta.scale_y, 0.0, max(preprocess_meta.source_height - 1.0, 0.0)))
 
     frame_x = int(round(roi_box.x1 + source_x))
     frame_y = int(round(roi_box.y1 + source_y))
     return frame_x, frame_y
 
 
-def map_axis_radius_to_frame(axis_length: float, preprocess_meta: PreprocessMeta) -> int:
-    radius = (axis_length / 2.0) / max(preprocess_meta.model_scale, 1e-6) / max(preprocess_meta.roi_upscale, 1e-6)
-    return max(1, int(round(radius)))
+def map_axis_radii_to_frame(ellipse: EllipseResult, preprocess_meta: ResizeMeta) -> Tuple[int, int]:
+    major_radius = max(1, int(round((ellipse.major_axis / 2.0) * preprocess_meta.scale_x)))
+    minor_radius = max(1, int(round((ellipse.minor_axis / 2.0) * preprocess_meta.scale_y)))
+    return major_radius, minor_radius
 
 
 def draw_ellipse_on_frame(
     frame: np.ndarray,
     ellipse: Optional[EllipseResult],
-    preprocess_meta: Optional[PreprocessMeta],
+    preprocess_meta: Optional[ResizeMeta],
     roi_box: Optional[ROIBox],
     color: Tuple[int, int, int],
     thickness: int = 2,
@@ -476,10 +437,7 @@ def draw_ellipse_on_frame(
         return output
 
     center = map_point_to_frame(ellipse.center_x, ellipse.center_y, preprocess_meta, roi_box)
-    axes = (
-        map_axis_radius_to_frame(ellipse.major_axis, preprocess_meta),
-        map_axis_radius_to_frame(ellipse.minor_axis, preprocess_meta),
-    )
+    axes = map_axis_radii_to_frame(ellipse, preprocess_meta)
 
     cv2.ellipse(output, center=center, axes=axes, angle=ellipse.angle_deg, startAngle=0, endAngle=360, color=color, thickness=thickness)
     return output
@@ -489,7 +447,7 @@ def draw_center_on_frame(
     frame: np.ndarray,
     x: Optional[float],
     y: Optional[float],
-    preprocess_meta: Optional[PreprocessMeta],
+    preprocess_meta: Optional[ResizeMeta],
     roi_box: Optional[ROIBox],
     color: Tuple[int, int, int],
     radius: int = 4,
@@ -506,7 +464,7 @@ def draw_center_on_frame(
 def draw_direction_arrow(
     frame: np.ndarray,
     iris_geometry: RegionGeometry,
-    preprocess_meta: Optional[PreprocessMeta],
+    preprocess_meta: Optional[ResizeMeta],
     roi_box: Optional[ROIBox],
     dx: Optional[float],
     dy: Optional[float],
@@ -560,7 +518,7 @@ def draw_roi_overlay(frame: np.ndarray, selected_roi: Optional[ROIBox]) -> np.nd
 def put_debug_text(
     frame: np.ndarray,
     geometry_result: Dict[str, Any],
-    preprocess_meta: Optional[PreprocessMeta],
+    preprocess_meta: Optional[ResizeMeta],
     smoothed_dx: Optional[float],
     smoothed_dy: Optional[float],
     fps: float,
@@ -581,11 +539,11 @@ def put_debug_text(
         lines.append("selected_roi: none")
 
     if preprocess_meta is not None:
-        lines.append(f"roi_upscale: x{preprocess_meta.roi_upscale:.2f}")
-        lines.append(f"preprocess: {preprocess_meta.upscaled_width}x{preprocess_meta.upscaled_height}")
+        lines.append(f"preprocess: {preprocess_meta.source_width}x{preprocess_meta.source_height}->{preprocess_meta.input_width}x{preprocess_meta.input_height}")
+        lines.append(f"scale_xy: {preprocess_meta.scale_x:.3f}, {preprocess_meta.scale_y:.3f}")
     else:
-        lines.append("roi_upscale: none")
         lines.append("preprocess: none")
+        lines.append("scale_xy: none")
 
     lines.extend([
         f"valid: {geometry_result['valid']}",
@@ -629,7 +587,7 @@ def draw_preview_panel(frame: np.ndarray, image: np.ndarray, label: str, top_lef
 def build_visualization(
     frame_bgr: np.ndarray,
     geometry_result: Dict[str, Any],
-    preprocess_meta: Optional[PreprocessMeta],
+    preprocess_meta: Optional[ResizeMeta],
     selected_roi: Optional[ROIBox],
     smoothed_dx: Optional[float],
     smoothed_dy: Optional[float],
@@ -654,21 +612,86 @@ def build_visualization(
     return vis
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="实时眼动方向验证")
+    parser.add_argument("--checkpoint_path", type=str, default=CHECKPOINT_PATH, help="待加载的 checkpoint 路径")
+    parser.add_argument("--camera_index", type=int, default=CAMERA_INDEX, help="摄像头索引")
+    parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
+
+    amp_group = parser.add_mutually_exclusive_group()
+    amp_group.add_argument("--amp", dest="amp", action="store_true", help="强制启用 CUDA AMP")
+    amp_group.add_argument("--no-amp", dest="amp", action="store_false", help="强制禁用 AMP")
+    parser.set_defaults(amp=None)
+
+    return parser.parse_args()
+
+
+def resolve_runtime_model_config(checkpoint_path: str, amp_override: Optional[bool]) -> RuntimeModelConfig:
+    checkpoint_file = Path(checkpoint_path)
+    if not checkpoint_file.exists():
+        raise FileNotFoundError(f"未找到 checkpoint: {checkpoint_file}")
+
+    metadata = peek_checkpoint_metadata(str(checkpoint_file), device="cpu")
+    runtime_config = RuntimeModelConfig(
+        checkpoint_path=str(checkpoint_file),
+        in_channels=int(metadata.get("in_channels", DEFAULT_IN_CHANNELS)),
+        num_classes=int(metadata.get("num_classes", NUM_CLASSES)),
+        base_channels=int(metadata.get("base_channels", BASE_CHANNELS)),
+        input_width=int(metadata.get("input_width", MODEL_INPUT_WIDTH)),
+        input_height=int(metadata.get("input_height", MODEL_INPUT_HEIGHT)),
+        use_amp=bool(metadata.get("amp", USE_AMP)),
+    )
+
+    if amp_override is not None:
+        runtime_config.use_amp = amp_override
+
+    return runtime_config
+
+
+def print_runtime_config(runtime_config: RuntimeModelConfig, device: torch.device) -> None:
+    print("checkpoint:", runtime_config.checkpoint_path)
+    print(
+        "model config:",
+        {
+            "in_channels": runtime_config.in_channels,
+            "num_classes": runtime_config.num_classes,
+            "base_channels": runtime_config.base_channels,
+            "input_width": runtime_config.input_width,
+            "input_height": runtime_config.input_height,
+            "amp": runtime_config.use_amp and device.type == "cuda",
+        },
+    )
+
+
 # =========================
 # 主循环
 # =========================
 def main() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("device:", device)
+    args = parse_args()
+    runtime_config = resolve_runtime_model_config(checkpoint_path=args.checkpoint_path, amp_override=args.amp)
 
-    model = UNet(in_channels=1, num_classes=NUM_CLASSES, base_channels=BASE_CHANNELS).to(device)
-    load_info = load_checkpoint_flexible(model=model, checkpoint_path=CHECKPOINT_PATH, device=device, optimizer=None)
+    device = resolve_device(args.device)
+    amp_enabled = runtime_config.use_amp and device.type == "cuda"
+    print("device:", device)
+    print_runtime_config(runtime_config, device)
+
+    model = UNet(
+        in_channels=runtime_config.in_channels,
+        num_classes=runtime_config.num_classes,
+        base_channels=runtime_config.base_channels,
+    ).to(device)
+    load_info = load_checkpoint_flexible(
+        model=model,
+        checkpoint_path=runtime_config.checkpoint_path,
+        device=device,
+        optimizer=None,
+    )
     print("checkpoint 信息:", load_info)
     model.eval()
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = cv2.VideoCapture(args.camera_index)
     if not cap.isOpened():
-        raise RuntimeError(f"无法打开摄像头: {CAMERA_INDEX}")
+        raise RuntimeError(f"无法打开摄像头: {args.camera_index}")
 
     camera_width, camera_height, camera_fps = configure_camera(cap)
     print(f"camera resolution: {camera_width}x{camera_height}, fps={camera_fps:.1f}")
@@ -692,15 +715,19 @@ def main() -> None:
 
         selected_roi = ROI_STATE.active_roi
         geometry_result = build_empty_geometry_result()
-        preprocess_meta: Optional[PreprocessMeta] = None
+        preprocess_meta: Optional[ResizeMeta] = None
         roi_gray_preview: Optional[np.ndarray] = None
         pred_label_map: Optional[np.ndarray] = None
 
         if selected_roi is not None and selected_roi.is_valid():
             roi_frame = selected_roi.crop(frame)
             if roi_frame.size > 0:
-                roi_gray_preview, input_tensor, preprocess_meta = preprocess_frame(roi_frame)
-                pred_label_map = predict_label_map(model, input_tensor, device)
+                roi_gray_preview, input_tensor, preprocess_meta = preprocess_frame(
+                    roi_frame,
+                    input_width=runtime_config.input_width,
+                    input_height=runtime_config.input_height,
+                )
+                pred_label_map = predict_label_map(model, input_tensor, device, use_amp=amp_enabled)
                 geometry_result = extract_eye_geometry_from_label_map(pred_label_map)
 
         smoothed_dx, smoothed_dy = ema_filter.update(
@@ -726,10 +753,7 @@ def main() -> None:
 
         if roi_gray_preview is not None:
             preview_y = vis.shape[0] - ROI_PREVIEW_HEIGHT - 10
-            label = "ROI Gray"
-            if preprocess_meta is not None and preprocess_meta.roi_upscale > 1.0:
-                label = f"ROI Gray x{preprocess_meta.roi_upscale:.2f}"
-            vis = draw_preview_panel(vis, roi_gray_preview, label, (10, preview_y), (ROI_PREVIEW_WIDTH, ROI_PREVIEW_HEIGHT), use_gray=True)
+            vis = draw_preview_panel(vis, roi_gray_preview, "ROI Gray", (10, preview_y), (ROI_PREVIEW_WIDTH, ROI_PREVIEW_HEIGHT), use_gray=True)
 
         if pred_label_map is not None:
             pred_preview = (pred_label_map * 85).astype(np.uint8)
