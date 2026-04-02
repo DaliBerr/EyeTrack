@@ -29,7 +29,7 @@ from eyetrack.training.checkpoints import load_checkpoint_flexible, peek_checkpo
 # 配置区
 # =========================
 CHECKPOINT_PATH = DEFAULT_CHECKPOINT_PATH
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 WINDOW_NAME = "Realtime Eye Direction Demo"
 
 PREFERRED_CAMERA_WIDTH = 1280
