@@ -22,14 +22,14 @@ from eyetrack.config import (
 from eyetrack.data.preprocessing import ResizeMeta, preprocess_bgr_frame
 from eyetrack.models.unet import UNet
 from eyetrack.runtime import autocast_context, resolve_device
-from eyetrack.training.checkpoints import load_checkpoint_flexible, peek_checkpoint_metadata
+from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata
 
 
 # =========================
 # 配置区
 # =========================
 CHECKPOINT_PATH = DEFAULT_CHECKPOINT_PATH
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 WINDOW_NAME = "Realtime Eye Direction Demo"
 
 PREFERRED_CAMERA_WIDTH = 1280
@@ -631,7 +631,16 @@ def resolve_runtime_model_config(checkpoint_path: str, amp_override: Optional[bo
     if not checkpoint_file.exists():
         raise FileNotFoundError(f"未找到 checkpoint: {checkpoint_file}")
 
-    metadata = peek_checkpoint_metadata(str(checkpoint_file), device="cpu")
+    metadata = resolve_model_metadata(
+        checkpoint_path=str(checkpoint_file),
+        device="cpu",
+        in_channels=DEFAULT_IN_CHANNELS,
+        num_classes=NUM_CLASSES,
+        base_channels=BASE_CHANNELS,
+        input_width=MODEL_INPUT_WIDTH,
+        input_height=MODEL_INPUT_HEIGHT,
+        amp=USE_AMP,
+    )
     runtime_config = RuntimeModelConfig(
         checkpoint_path=str(checkpoint_file),
         in_channels=int(metadata.get("in_channels", DEFAULT_IN_CHANNELS)),

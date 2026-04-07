@@ -55,13 +55,15 @@ dataset_root/
 
 ## 常用命令
 
-训练轻量模型：
+### 移动端标准预设（推荐，b8@384x240）
+
+训练 b8 模型：
 
 ```bash
 python Train.py \
   --root_dir path/to/openeds \
-  --save_checkpoint_path ./checkpoints/best_unet_b16_384x240_amp.pth \
-  --base_channels 16 \
+  --save_checkpoint_path ./checkpoints/best_unet_b8_384x240_amp.pth \
+  --base_channels 8 \
   --input_width 384 \
   --input_height 240 \
   --no-use_mask \
@@ -84,37 +86,31 @@ python preprocess_openeds_dataset.py \
 
 ```bash
 python predict_segmentation_to_npy.py \
-  --checkpoint_path ./checkpoints/best_unet_b16_384x240_amp.pth \
+  --checkpoint_path ./checkpoints/best_unet_b8_384x240_amp.pth \
   --image_dir path/to/images \
-  --output_dir ./pred_validation_npy \
-  --base_channels 16 \
-  --input_width 384 \
-  --input_height 240 \
-  --amp
+  --output_dir ./pred_validation_npy
 ```
 
 导出 ONNX：
 
 ```bash
 python export_unet_to_onnx.py \
-  --checkpoint_path ./checkpoints/best_unet_b16_384x240_amp.pth \
-  --onnx_path ./checkpoints/unet_b16_384x240_fp32.onnx \
-  --base_channels 16 \
-  --input_width 384 \
-  --input_height 240
+  --checkpoint_path ./checkpoints/best_unet_b8_384x240_amp.pth \
+  --onnx_path ./checkpoints/unet_b8_384x240_fp32.onnx
 ```
 
 执行 PTQ：
 
 ```bash
 python quantize_onnx_model.py \
-  --model_path ./checkpoints/unet_b16_384x240_fp32.onnx \
+  --model_path ./checkpoints/unet_b8_384x240_fp32.onnx \
   --calibration_root path/to/openeds \
-  --output_path ./checkpoints/unet_b16_384x240_int8_qdq.onnx \
+  --output_path ./checkpoints/unet_b8_384x240_int8_qdq.onnx \
   --quant_format qdq \
   --activation_type qint8 \
   --weight_type qint8 \
   --calibration_method percentile \
+  --auto_fallback_to_minmax_on_oom \
   --auto_fallback_to_u8u8 \
   --validation_root path/to/openeds
 ```
@@ -123,10 +119,19 @@ python quantize_onnx_model.py \
 
 ```bash
 python evaluate_onnx_model.py \
-  --model_path ./checkpoints/unet_b16_384x240_fp32.onnx \
+  --model_path ./checkpoints/unet_b8_384x240_fp32.onnx \
   --root_dir path/to/openeds \
   --split validation \
-  --checkpoint_path ./checkpoints/best_unet_b16_384x240_amp.pth
+  --checkpoint_path ./checkpoints/best_unet_b8_384x240_amp.pth
+```
+
+批量处理时序序列：
+
+```bash
+python batch_predict_and_extract_sequences.py \
+  --sequence_root path/to/sequences \
+  --checkpoint_path ./checkpoints/best_unet_b8_384x240_amp.pth \
+  --output_root ./sequence_outputs
 ```
 
 从预测结果提取几何参数：
@@ -135,19 +140,6 @@ python evaluate_onnx_model.py \
 python extract_geometry_from_segmentation.py \
   --pred_dir ./pred_validation_npy \
   --output_csv ./geometry_result.csv
-```
-
-批量处理时序序列：
-
-```bash
-python batch_predict_and_extract_sequences.py \
-  --sequence_root path/to/sequences \
-  --checkpoint_path ./checkpoints/best_unet_b16_384x240_amp.pth \
-  --output_root ./sequence_outputs \
-  --base_channels 16 \
-  --input_width 384 \
-  --input_height 240 \
-  --amp
 ```
 
 对 `sequence_outputs` 做平滑和摘要统计：
@@ -166,9 +158,47 @@ python analyze_sequence_geometry.py \
   --output_root ./sequence_analysis
 ```
 
+### 兼容基线（b16@384x240）
+
+以下命令保留给旧 baseline / 兼容流程，仓库默认常量和默认路径仍指向 b16：
+
+```bash
+python Train.py \
+  --root_dir path/to/openeds \
+  --save_checkpoint_path ./checkpoints/best_unet_b16_384x240_amp.pth \
+  --base_channels 16 \
+  --input_width 384 \
+  --input_height 240 \
+  --no-use_mask \
+  --amp
+```
+
+```bash
+python export_unet_to_onnx.py \
+  --checkpoint_path ./checkpoints/best_unet_b16_384x240_amp.pth \
+  --onnx_path ./checkpoints/unet_b16_384x240_fp32.onnx
+```
+
+```bash
+python quantize_onnx_model.py \
+  --model_path ./checkpoints/unet_b16_384x240_fp32.onnx \
+  --calibration_root path/to/openeds \
+  --output_path ./checkpoints/unet_b16_384x240_int8_qdq.onnx \
+  --quant_format qdq \
+  --activation_type qint8 \
+  --weight_type qint8 \
+  --calibration_method percentile \
+  --auto_fallback_to_minmax_on_oom \
+  --auto_fallback_to_u8u8 \
+  --validation_root path/to/openeds
+```
+
 ## 说明
 
 - `Train.py` 和部分可视化脚本里包含本地默认路径，运行前需要按你的环境修改。
+- 对于新版完整 checkpoint，PyTorch 侧训练续训、预测、可视化、评估、导出和实时脚本会优先读取 checkpoint metadata 自动恢复 `base_channels`、输入尺寸和 AMP 配置。
+- 移动端当前推荐预设为 `b8@384x240`，建议使用 `best_unet_b8_384x240_amp.pth`、`unet_b8_384x240_fp32.onnx`、`unet_b8_384x240_int8_qdq.onnx` 这组产物命名。
+- 量化默认会在 histogram 校准 OOM 时自动回退到 `MinMax + 较小 calibration_limit`，若不需要该行为可显式传 `--no-auto_fallback_to_minmax_on_oom`。
 - 当前轻量模型默认配置为 `base_channels=16`、输入尺寸 `384x240`、预处理模式 `raw grayscale + resize + normalize`。
 - 模型默认类别数为 4，代码中约定 `iris=2`、`pupil=3`。
 - 结果目录如 `checkpoints/`、`sequence_outputs/`、`sequence_analysis/`、`vis_val/` 已在 `.gitignore` 中排除。

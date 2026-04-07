@@ -19,7 +19,7 @@ from eyetrack.config import (
 from eyetrack.data.preprocessing import preprocess_gray_image
 from eyetrack.models.unet import UNet
 from eyetrack.runtime import autocast_context, resolve_device
-from eyetrack.training.checkpoints import load_checkpoint_flexible
+from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata
 
 
 VALID_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -151,15 +151,26 @@ def run_prediction_to_npy(
     save_dir.mkdir(parents=True, exist_ok=True)
 
     torch_device = resolve_device(device)
+    resolved_model_metadata = resolve_model_metadata(
+        checkpoint_path=checkpoint_path,
+        device="cpu",
+        in_channels=in_channels,
+        num_classes=num_classes,
+        base_channels=base_channels,
+        input_width=input_width,
+        input_height=input_height,
+        amp=use_amp,
+    )
     print("device:", torch_device)
+    print("model metadata:", resolved_model_metadata)
 
     resolved_image_dir = resolve_image_dir(image_dir=image_dir, root_dir=root_dir, split=split)
     print("image_dir:", resolved_image_dir)
 
     dataset = SegmentationInferenceDataset(
         image_dir=str(resolved_image_dir),
-        input_width=input_width,
-        input_height=input_height,
+        input_width=int(resolved_model_metadata["input_width"]),
+        input_height=int(resolved_model_metadata["input_height"]),
     )
     dataloader = DataLoader(
         dataset,
@@ -170,9 +181,9 @@ def run_prediction_to_npy(
     )
 
     model = UNet(
-        in_channels=in_channels,
-        num_classes=num_classes,
-        base_channels=base_channels,
+        in_channels=int(resolved_model_metadata["in_channels"]),
+        num_classes=int(resolved_model_metadata["num_classes"]),
+        base_channels=int(resolved_model_metadata["base_channels"]),
     ).to(torch_device)
 
     load_info = load_checkpoint_flexible(
@@ -191,7 +202,7 @@ def run_prediction_to_npy(
             images = batch["image"].to(torch_device)
             sample_ids = batch["id"]
 
-            with autocast_context(device=torch_device, use_amp=use_amp):
+            with autocast_context(device=torch_device, use_amp=bool(resolved_model_metadata["amp"])):
                 logits = model(images)
             preds = torch.argmax(logits, dim=1).detach().cpu().numpy().astype(np.uint8)
 

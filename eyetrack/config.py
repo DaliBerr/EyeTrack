@@ -14,6 +14,10 @@ DEFAULT_CHECKPOINT_PATH = "./checkpoints/best_unet_b16_384x240_amp.pth"
 DEFAULT_ONNX_PATH = "./checkpoints/unet_b16_384x240_fp32.onnx"
 DEFAULT_INT8_ONNX_PATH = "./checkpoints/unet_b16_384x240_int8_qdq.onnx"
 
+DEFAULT_B8_CHECKPOINT_PATH = "./checkpoints/best_unet_b8_384x240_amp.pth"
+DEFAULT_B8_ONNX_PATH = "./checkpoints/unet_b8_384x240_fp32.onnx"
+DEFAULT_B8_INT8_ONNX_PATH = "./checkpoints/unet_b8_384x240_int8_qdq.onnx"
+
 
 def build_model_metadata(
     in_channels: int = DEFAULT_IN_CHANNELS,

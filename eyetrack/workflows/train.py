@@ -23,7 +23,7 @@ from eyetrack.config import (
 )
 from eyetrack.data.openeds import OpenEDSSegDataset
 from eyetrack.models.unet import UNet
-from eyetrack.training.checkpoints import load_checkpoint_flexible, save_full_checkpoint
+from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata, save_full_checkpoint
 from eyetrack.training.engine import train_one_epoch, validate_one_epoch
 from eyetrack.runtime import resolve_device, should_enable_amp
 
@@ -112,9 +112,32 @@ def run_training(
     set_seed(42)
 
     torch_device = resolve_device(device)
+    resume_metadata_path = resume_checkpoint_path if resume_checkpoint_path and os.path.exists(resume_checkpoint_path) else None
+    resolved_model_metadata = resolve_model_metadata(
+        checkpoint_path=resume_metadata_path,
+        device="cpu",
+        in_channels=in_channels,
+        num_classes=num_classes,
+        base_channels=base_channels,
+        input_width=input_width,
+        input_height=input_height,
+        preprocess_mode=DEFAULT_PREPROCESS_MODE,
+        amp=use_amp,
+        use_mask=use_mask,
+    )
+
+    in_channels = int(resolved_model_metadata["in_channels"])
+    num_classes = int(resolved_model_metadata["num_classes"])
+    base_channels = int(resolved_model_metadata["base_channels"])
+    input_width = int(resolved_model_metadata["input_width"])
+    input_height = int(resolved_model_metadata["input_height"])
+    use_amp = bool(resolved_model_metadata["amp"])
+    use_mask = bool(resolved_model_metadata["use_mask"])
+
     amp_enabled = should_enable_amp(device=torch_device, use_amp=use_amp)
     print("device:", torch_device)
     print("amp:", amp_enabled)
+    print("model metadata:", resolved_model_metadata)
 
     train_dataset = OpenEDSSegDataset(
         root_dir=root_dir,
@@ -157,7 +180,7 @@ def run_training(
         base_channels=base_channels,
         input_width=input_width,
         input_height=input_height,
-        preprocess_mode=DEFAULT_PREPROCESS_MODE,
+        preprocess_mode=str(resolved_model_metadata["preprocess_mode"]),
         amp=use_amp,
         use_mask=use_mask,
     )

@@ -48,6 +48,22 @@ def require_onnxruntime():
     return ort
 
 
+def require_onnxruntime_quantization():
+    """
+    summary: 按需导入 onnxruntime.quantization
+    param 无: 无
+    return: onnxruntime.quantization 模块
+    """
+    try:
+        import onnxruntime.quantization as ort_quantization
+    except ImportError as exc:
+        raise RuntimeError(
+            "缺少 onnxruntime.quantization，请确认已安装带量化工具的 onnxruntime 版本。"
+        ) from exc
+
+    return ort_quantization
+
+
 def preprocess_onnx_model_file(input_path: str, output_path: Optional[str] = None) -> str:
     """
     summary: 对导出的 ONNX 模型执行校验与 shape inference

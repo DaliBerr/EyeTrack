@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+from typing import Any
 
 from eyetrack.config import DEFAULT_INPUT_HEIGHT, DEFAULT_INPUT_WIDTH, DEFAULT_INT8_ONNX_PATH, DEFAULT_ONNX_PATH
 from eyetrack.deployment.onnx_tools import (
@@ -9,17 +10,68 @@ from eyetrack.deployment.onnx_tools import (
     get_onnx_input_name,
     preprocess_onnx_model_file,
     require_onnxruntime,
+    require_onnxruntime_quantization,
     resolve_image_dir,
 )
 
 
-def parse_quant_enum(ort, enum_cls, value: str):
+def parse_quant_enum(enum_cls, value: str):
     name = value.upper()
     for candidate in dir(enum_cls):
         if candidate.upper() == name:
             return getattr(enum_cls, candidate)
     valid = [candidate for candidate in dir(enum_cls) if not candidate.startswith("_")]
     raise ValueError(f"不支持的量化选项: {value}，可选值: {valid}")
+
+
+def is_histogram_calibration_method(calibration_method: str) -> bool:
+    return calibration_method.strip().lower() in {"percentile", "entropy", "distribution"}
+
+
+def is_probable_calibration_oom(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "bad allocation" in message or "out of memory" in message or "failed to allocate" in message
+
+
+def build_calibration_reader(
+    calibration_root: str,
+    split: str,
+    input_name: str,
+    input_width: int,
+    input_height: int,
+    calibration_limit: int,
+) -> CalibrationImageReader:
+    calibration_image_dir = resolve_image_dir(root_dir=calibration_root, split=split)
+    return CalibrationImageReader(
+        image_dir=calibration_image_dir,
+        input_name=input_name,
+        input_width=input_width,
+        input_height=input_height,
+        limit=calibration_limit,
+    )
+
+
+def run_quantize_static(
+    quantization: Any,
+    model_path: str,
+    output_path: str,
+    reader: CalibrationImageReader,
+    quant_format: str,
+    activation_type: str,
+    weight_type: str,
+    calibration_method: str,
+    per_channel: bool,
+) -> None:
+    quantization.quantize_static(
+        model_input=model_path,
+        model_output=output_path,
+        calibration_data_reader=reader,
+        quant_format=parse_quant_enum(quantization.QuantFormat, quant_format),
+        activation_type=parse_quant_enum(quantization.QuantType, activation_type),
+        weight_type=parse_quant_enum(quantization.QuantType, weight_type),
+        per_channel=per_channel,
+        calibrate_method=parse_quant_enum(quantization.CalibrationMethod, calibration_method),
+    )
 
 
 def quantize_onnx_model(
@@ -35,6 +87,8 @@ def quantize_onnx_model(
     calibration_method: str = "percentile",
     calibration_limit: int = 256,
     per_channel: bool = True,
+    auto_fallback_to_minmax_on_oom: bool = True,
+    oom_fallback_calibration_limit: int = 32,
     auto_fallback_to_u8u8: bool = False,
     fallback_output_path: str | None = None,
     validation_root: str | None = None,
@@ -55,6 +109,8 @@ def quantize_onnx_model(
     param calibration_method: 校准方法
     param calibration_limit: 校准样本上限
     param per_channel: 是否启用 per-channel
+    param auto_fallback_to_minmax_on_oom: 若 histogram 校准 OOM，是否自动回退到 MinMax
+    param oom_fallback_calibration_limit: OOM 回退时使用的校准样本上限
     param auto_fallback_to_u8u8: 是否自动回退到 U8U8
     param fallback_output_path: 回退模型输出路径
     param validation_root: 用于自动回退判断的验证集根目录
@@ -65,34 +121,78 @@ def quantize_onnx_model(
     if calibration_root is None:
         raise ValueError("必须提供 --calibration_root，用于静态 PTQ 校准。")
 
-    ort = require_onnxruntime()
-    quantization = ort.quantization
+    require_onnxruntime()
+    quantization = require_onnxruntime_quantization()
 
     preprocess_onnx_model_file(model_path)
 
     input_name = get_onnx_input_name(model_path)
-    calibration_image_dir = resolve_image_dir(root_dir=calibration_root, split=split)
-    reader = CalibrationImageReader(
-        image_dir=calibration_image_dir,
+    reader = build_calibration_reader(
+        calibration_root=calibration_root,
+        split=split,
         input_name=input_name,
         input_width=input_width,
         input_height=input_height,
-        limit=calibration_limit,
+        calibration_limit=calibration_limit,
     )
 
     output_model_path = Path(output_path)
     output_model_path.parent.mkdir(parents=True, exist_ok=True)
+    effective_calibration_method = calibration_method
 
-    quantization.quantize_static(
-        model_input=model_path,
-        model_output=str(output_model_path),
-        calibration_data_reader=reader,
-        quant_format=parse_quant_enum(ort, quantization.QuantFormat, quant_format),
-        activation_type=parse_quant_enum(ort, quantization.QuantType, activation_type),
-        weight_type=parse_quant_enum(ort, quantization.QuantType, weight_type),
-        per_channel=per_channel,
-        calibrate_method=parse_quant_enum(ort, quantization.CalibrationMethod, calibration_method),
-    )
+    try:
+        run_quantize_static(
+            quantization=quantization,
+            model_path=model_path,
+            output_path=str(output_model_path),
+            reader=reader,
+            quant_format=quant_format,
+            activation_type=activation_type,
+            weight_type=weight_type,
+            calibration_method=calibration_method,
+            per_channel=per_channel,
+        )
+    except Exception as exc:
+        if (
+            auto_fallback_to_minmax_on_oom and
+            is_histogram_calibration_method(calibration_method) and
+            is_probable_calibration_oom(exc)
+        ):
+            fallback_limit = min(calibration_limit, oom_fallback_calibration_limit)
+            print(
+                "检测到 histogram 校准阶段内存不足，"
+                f"将自动回退到 MinMax，并把校准样本数限制为 {fallback_limit}。"
+            )
+            reader = build_calibration_reader(
+                calibration_root=calibration_root,
+                split=split,
+                input_name=input_name,
+                input_width=input_width,
+                input_height=input_height,
+                calibration_limit=fallback_limit,
+            )
+            run_quantize_static(
+                quantization=quantization,
+                model_path=model_path,
+                output_path=str(output_model_path),
+                reader=reader,
+                quant_format=quant_format,
+                activation_type=activation_type,
+                weight_type=weight_type,
+                calibration_method="minmax",
+                per_channel=per_channel,
+            )
+            effective_calibration_method = "minmax"
+            print("已完成 MinMax OOM fallback 量化。")
+        else:
+            if is_histogram_calibration_method(calibration_method) and is_probable_calibration_oom(exc):
+                raise RuntimeError(
+                    "当前校准配置触发了 ONNX Runtime histogram 校准器的内存问题。"
+                    "建议先把 --calibration_limit 降到 16 或 32；"
+                    "若仍失败，改用 --calibration_method minmax；"
+                    "或者直接加 --auto_fallback_to_minmax_on_oom。"
+                ) from exc
+            raise
     print(f"已生成量化模型: {output_model_path}")
 
     if not auto_fallback_to_u8u8 or validation_root is None:
@@ -140,7 +240,7 @@ def quantize_onnx_model(
         activation_type=quantization.QuantType.QUInt8,
         weight_type=quantization.QuantType.QUInt8,
         per_channel=per_channel,
-        calibrate_method=parse_quant_enum(ort, quantization.CalibrationMethod, calibration_method),
+        calibrate_method=parse_quant_enum(quantization.CalibrationMethod, effective_calibration_method),
     )
     print(f"QInt8 结果超出阈值，已生成 U8U8 fallback 模型: {fallback_path}")
 
@@ -160,6 +260,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--calibration_limit", type=int, default=256, help="用于校准的最大图像数")
     parser.add_argument("--per_channel", action="store_true", default=True, help="启用 per-channel 权重量化")
     parser.add_argument("--no-per_channel", action="store_false", dest="per_channel", help="禁用 per-channel 权重量化")
+    parser.add_argument(
+        "--auto_fallback_to_minmax_on_oom",
+        action="store_true",
+        dest="auto_fallback_to_minmax_on_oom",
+        help="Histogram 校准 OOM 时自动回退到 MinMax",
+    )
+    parser.add_argument(
+        "--no-auto_fallback_to_minmax_on_oom",
+        action="store_false",
+        dest="auto_fallback_to_minmax_on_oom",
+        help="禁用 Histogram 校准 OOM 时的自动 MinMax 回退",
+    )
+    parser.set_defaults(auto_fallback_to_minmax_on_oom=True)
+    parser.add_argument("--oom_fallback_calibration_limit", type=int, default=32, help="OOM 回退到 MinMax 时使用的校准样本上限")
     parser.add_argument("--auto_fallback_to_u8u8", action="store_true", help="若精度下降过大则自动回退到 U8U8")
     parser.add_argument("--fallback_output_path", type=str, default=None, help="U8U8 fallback 输出路径")
     parser.add_argument("--validation_root", type=str, default=None, help="用于自动回退判断的验证集根目录")
@@ -183,6 +297,8 @@ def main() -> None:
         calibration_method=args.calibration_method,
         calibration_limit=args.calibration_limit,
         per_channel=args.per_channel,
+        auto_fallback_to_minmax_on_oom=args.auto_fallback_to_minmax_on_oom,
+        oom_fallback_calibration_limit=args.oom_fallback_calibration_limit,
         auto_fallback_to_u8u8=args.auto_fallback_to_u8u8,
         fallback_output_path=args.fallback_output_path,
         validation_root=args.validation_root,
