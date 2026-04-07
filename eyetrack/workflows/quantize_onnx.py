@@ -87,7 +87,7 @@ def quantize_onnx_model(
     calibration_method: str = "percentile",
     calibration_limit: int = 256,
     per_channel: bool = True,
-    auto_fallback_to_minmax_on_oom: bool = False,
+    auto_fallback_to_minmax_on_oom: bool = True,
     oom_fallback_calibration_limit: int = 32,
     auto_fallback_to_u8u8: bool = False,
     fallback_output_path: str | None = None,
@@ -138,6 +138,7 @@ def quantize_onnx_model(
 
     output_model_path = Path(output_path)
     output_model_path.parent.mkdir(parents=True, exist_ok=True)
+    effective_calibration_method = calibration_method
 
     try:
         run_quantize_static(
@@ -181,6 +182,7 @@ def quantize_onnx_model(
                 calibration_method="minmax",
                 per_channel=per_channel,
             )
+            effective_calibration_method = "minmax"
             print("已完成 MinMax OOM fallback 量化。")
         else:
             if is_histogram_calibration_method(calibration_method) and is_probable_calibration_oom(exc):
@@ -238,7 +240,7 @@ def quantize_onnx_model(
         activation_type=quantization.QuantType.QUInt8,
         weight_type=quantization.QuantType.QUInt8,
         per_channel=per_channel,
-        calibrate_method=parse_quant_enum(quantization.CalibrationMethod, calibration_method),
+        calibrate_method=parse_quant_enum(quantization.CalibrationMethod, effective_calibration_method),
     )
     print(f"QInt8 结果超出阈值，已生成 U8U8 fallback 模型: {fallback_path}")
 
@@ -258,7 +260,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--calibration_limit", type=int, default=256, help="用于校准的最大图像数")
     parser.add_argument("--per_channel", action="store_true", default=True, help="启用 per-channel 权重量化")
     parser.add_argument("--no-per_channel", action="store_false", dest="per_channel", help="禁用 per-channel 权重量化")
-    parser.add_argument("--auto_fallback_to_minmax_on_oom", action="store_true", help="Histogram 校准 OOM 时自动回退到 MinMax")
+    parser.add_argument(
+        "--auto_fallback_to_minmax_on_oom",
+        action="store_true",
+        dest="auto_fallback_to_minmax_on_oom",
+        help="Histogram 校准 OOM 时自动回退到 MinMax",
+    )
+    parser.add_argument(
+        "--no-auto_fallback_to_minmax_on_oom",
+        action="store_false",
+        dest="auto_fallback_to_minmax_on_oom",
+        help="禁用 Histogram 校准 OOM 时的自动 MinMax 回退",
+    )
+    parser.set_defaults(auto_fallback_to_minmax_on_oom=True)
     parser.add_argument("--oom_fallback_calibration_limit", type=int, default=32, help="OOM 回退到 MinMax 时使用的校准样本上限")
     parser.add_argument("--auto_fallback_to_u8u8", action="store_true", help="若精度下降过大则自动回退到 U8U8")
     parser.add_argument("--fallback_output_path", type=str, default=None, help="U8U8 fallback 输出路径")

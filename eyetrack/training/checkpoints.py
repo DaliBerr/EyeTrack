@@ -4,6 +4,18 @@ from typing import Any, Dict, Optional
 import torch
 from torch import nn
 
+from eyetrack.config import (
+    DEFAULT_BASE_CHANNELS,
+    DEFAULT_IN_CHANNELS,
+    DEFAULT_INPUT_HEIGHT,
+    DEFAULT_INPUT_WIDTH,
+    DEFAULT_NUM_CLASSES,
+    DEFAULT_PREPROCESS_MODE,
+    DEFAULT_USE_AMP,
+    DEFAULT_USE_MASK,
+    build_model_metadata,
+)
+
 
 def save_full_checkpoint(
     model: nn.Module,
@@ -120,3 +132,58 @@ def peek_checkpoint_metadata(checkpoint_path: str, device: torch.device | str = 
         return checkpoint.get("metadata", {})
 
     return {}
+
+
+def resolve_model_metadata(
+    checkpoint_path: str | None = None,
+    device: torch.device | str = "cpu",
+    in_channels: int = DEFAULT_IN_CHANNELS,
+    num_classes: int = DEFAULT_NUM_CLASSES,
+    base_channels: int = DEFAULT_BASE_CHANNELS,
+    input_width: int = DEFAULT_INPUT_WIDTH,
+    input_height: int = DEFAULT_INPUT_HEIGHT,
+    preprocess_mode: str = DEFAULT_PREPROCESS_MODE,
+    amp: bool = DEFAULT_USE_AMP,
+    use_mask: bool = DEFAULT_USE_MASK,
+) -> Dict[str, Any]:
+    """
+    summary: 基于 fallback 配置和 checkpoint 元数据解析最终模型配置
+    param checkpoint_path: 可选 checkpoint 路径
+    param device: 读取 checkpoint 时的 map_location
+    param in_channels: fallback 输入通道数
+    param num_classes: fallback 类别数
+    param base_channels: fallback 基础通道数
+    param input_width: fallback 输入宽度
+    param input_height: fallback 输入高度
+    param preprocess_mode: fallback 预处理模式
+    param amp: fallback AMP 开关
+    param use_mask: fallback mask 开关
+    return: 解析后的模型配置元数据
+    """
+    resolved = build_model_metadata(
+        in_channels=in_channels,
+        num_classes=num_classes,
+        base_channels=base_channels,
+        input_width=input_width,
+        input_height=input_height,
+        preprocess_mode=preprocess_mode,
+        amp=amp,
+        use_mask=use_mask,
+    )
+
+    if checkpoint_path is None:
+        return resolved
+
+    checkpoint_metadata = peek_checkpoint_metadata(checkpoint_path=checkpoint_path, device=device)
+    if len(checkpoint_metadata) == 0:
+        return resolved
+
+    resolved["in_channels"] = int(checkpoint_metadata.get("in_channels", resolved["in_channels"]))
+    resolved["num_classes"] = int(checkpoint_metadata.get("num_classes", resolved["num_classes"]))
+    resolved["base_channels"] = int(checkpoint_metadata.get("base_channels", resolved["base_channels"]))
+    resolved["input_width"] = int(checkpoint_metadata.get("input_width", resolved["input_width"]))
+    resolved["input_height"] = int(checkpoint_metadata.get("input_height", resolved["input_height"]))
+    resolved["preprocess_mode"] = str(checkpoint_metadata.get("preprocess_mode", resolved["preprocess_mode"]))
+    resolved["amp"] = bool(checkpoint_metadata.get("amp", resolved["amp"]))
+    resolved["use_mask"] = bool(checkpoint_metadata.get("use_mask", resolved["use_mask"]))
+    return resolved

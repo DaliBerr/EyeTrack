@@ -13,7 +13,7 @@ from eyetrack.config import (
 from eyetrack.data.openeds import OpenEDSSegDataset
 from eyetrack.models.unet import UNet
 from eyetrack.runtime import resolve_device
-from eyetrack.training.checkpoints import load_checkpoint_flexible
+from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata
 from eyetrack.visualization.predictions import visualize_predictions
 
 
@@ -43,13 +43,24 @@ def run_visualization_only(
     return: 无
     """
     torch_device = resolve_device(device)
+    resolved_model_metadata = resolve_model_metadata(
+        checkpoint_path=checkpoint_path,
+        device="cpu",
+        in_channels=in_channels,
+        num_classes=num_classes,
+        base_channels=base_channels,
+        input_width=input_width,
+        input_height=input_height,
+        amp=use_amp,
+    )
     print("device:", torch_device)
+    print("model metadata:", resolved_model_metadata)
 
     val_dataset = OpenEDSSegDataset(
         root_dir=root_dir,
         split="validation",
-        input_width=input_width,
-        input_height=input_height,
+        input_width=int(resolved_model_metadata["input_width"]),
+        input_height=int(resolved_model_metadata["input_height"]),
     )
     val_loader = DataLoader(
         val_dataset,
@@ -59,7 +70,11 @@ def run_visualization_only(
         pin_memory=torch_device.type == "cuda",
     )
 
-    model = UNet(in_channels=in_channels, num_classes=num_classes, base_channels=base_channels).to(torch_device)
+    model = UNet(
+        in_channels=int(resolved_model_metadata["in_channels"]),
+        num_classes=int(resolved_model_metadata["num_classes"]),
+        base_channels=int(resolved_model_metadata["base_channels"]),
+    ).to(torch_device)
 
     load_info = load_checkpoint_flexible(
         model=model,
@@ -76,5 +91,5 @@ def run_visualization_only(
         device=torch_device,
         save_dir=save_dir,
         num_samples=num_samples,
-        use_amp=use_amp,
+        use_amp=bool(resolved_model_metadata["amp"]),
     )

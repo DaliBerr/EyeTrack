@@ -16,7 +16,7 @@ from eyetrack.config import (
 from eyetrack.deployment.onnx_tools import preprocess_onnx_model_file, require_onnx
 from eyetrack.models.unet import UNet
 from eyetrack.runtime import resolve_device
-from eyetrack.training.checkpoints import load_checkpoint_flexible, peek_checkpoint_metadata
+from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata
 
 
 def export_checkpoint_to_onnx(
@@ -44,12 +44,21 @@ def export_checkpoint_to_onnx(
     return: 无
     """
     torch_device = resolve_device(device)
-    checkpoint_metadata = peek_checkpoint_metadata(checkpoint_path=checkpoint_path, device="cpu")
+    resolved_model_metadata = resolve_model_metadata(
+        checkpoint_path=checkpoint_path,
+        device="cpu",
+        in_channels=in_channels,
+        num_classes=num_classes,
+        base_channels=base_channels,
+        input_width=input_width,
+        input_height=input_height,
+    )
+    print("model metadata:", resolved_model_metadata)
 
     model = UNet(
-        in_channels=int(checkpoint_metadata.get("in_channels", in_channels)),
-        num_classes=int(checkpoint_metadata.get("num_classes", num_classes)),
-        base_channels=int(checkpoint_metadata.get("base_channels", base_channels)),
+        in_channels=int(resolved_model_metadata["in_channels"]),
+        num_classes=int(resolved_model_metadata["num_classes"]),
+        base_channels=int(resolved_model_metadata["base_channels"]),
     ).to(torch_device)
 
     load_info = load_checkpoint_flexible(
@@ -64,9 +73,9 @@ def export_checkpoint_to_onnx(
 
     dummy_input = torch.randn(
         1,
-        int(checkpoint_metadata.get("in_channels", in_channels)),
-        int(checkpoint_metadata.get("input_height", input_height)),
-        int(checkpoint_metadata.get("input_width", input_width)),
+        int(resolved_model_metadata["in_channels"]),
+        int(resolved_model_metadata["input_height"]),
+        int(resolved_model_metadata["input_width"]),
         device=torch_device,
     )
 
@@ -89,13 +98,14 @@ def export_checkpoint_to_onnx(
     onnx = require_onnx()
     model_proto = onnx.load(processed_path)
     metadata = build_model_metadata(
-        in_channels=int(checkpoint_metadata.get("in_channels", in_channels)),
-        num_classes=int(checkpoint_metadata.get("num_classes", num_classes)),
-        base_channels=int(checkpoint_metadata.get("base_channels", base_channels)),
-        input_width=int(checkpoint_metadata.get("input_width", input_width)),
-        input_height=int(checkpoint_metadata.get("input_height", input_height)),
-        preprocess_mode=str(checkpoint_metadata.get("preprocess_mode", "raw_resize")),
-        amp=bool(checkpoint_metadata.get("amp", True)),
+        in_channels=int(resolved_model_metadata["in_channels"]),
+        num_classes=int(resolved_model_metadata["num_classes"]),
+        base_channels=int(resolved_model_metadata["base_channels"]),
+        input_width=int(resolved_model_metadata["input_width"]),
+        input_height=int(resolved_model_metadata["input_height"]),
+        preprocess_mode=str(resolved_model_metadata["preprocess_mode"]),
+        amp=bool(resolved_model_metadata["amp"]),
+        use_mask=bool(resolved_model_metadata["use_mask"]),
     )
     onnx.helper.set_model_props(model_proto, {key: str(value) for key, value in metadata.items()})
     onnx.save(model_proto, processed_path)

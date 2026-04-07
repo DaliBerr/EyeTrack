@@ -20,7 +20,7 @@ from eyetrack.deployment.onnx_tools import evaluate_onnx_segmentation
 from eyetrack.metrics.segmentation import average_dict_values, compute_dice_per_class
 from eyetrack.models.unet import UNet
 from eyetrack.runtime import autocast_context, resolve_device
-from eyetrack.training.checkpoints import load_checkpoint_flexible
+from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata
 
 
 def compare_onnx_with_pytorch(
@@ -59,17 +59,33 @@ def compare_onnx_with_pytorch(
     """
     import onnxruntime as ort
 
+    resolved_model_metadata = resolve_model_metadata(
+        checkpoint_path=checkpoint_path,
+        device="cpu",
+        in_channels=in_channels,
+        num_classes=num_classes,
+        base_channels=base_channels,
+        input_width=input_width,
+        input_height=input_height,
+        amp=use_amp,
+    )
+
     dataset = OpenEDSSegDataset(
         root_dir=root_dir,
         split=split,
-        input_width=input_width,
-        input_height=input_height,
+        input_width=int(resolved_model_metadata["input_width"]),
+        input_height=int(resolved_model_metadata["input_height"]),
     )
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     torch_device = resolve_device(device)
-    model = UNet(in_channels=in_channels, num_classes=num_classes, base_channels=base_channels).to(torch_device)
+    model = UNet(
+        in_channels=int(resolved_model_metadata["in_channels"]),
+        num_classes=int(resolved_model_metadata["num_classes"]),
+        base_channels=int(resolved_model_metadata["base_channels"]),
+    ).to(torch_device)
     load_info = load_checkpoint_flexible(model=model, checkpoint_path=checkpoint_path, device=torch_device, optimizer=None)
+    print("PyTorch model metadata:", resolved_model_metadata)
     print("PyTorch checkpoint 信息:", load_info)
     model.eval()
 
@@ -85,7 +101,7 @@ def compare_onnx_with_pytorch(
             images = batch["image"].to(torch_device)
             onnx_inputs = batch["image"].cpu().numpy().astype(np.float32)
 
-            with autocast_context(device=torch_device, use_amp=use_amp):
+            with autocast_context(device=torch_device, use_amp=bool(resolved_model_metadata["amp"])):
                 torch_logits = model(images)
             torch_preds = torch.argmax(torch_logits, dim=1).cpu()
 
@@ -93,7 +109,12 @@ def compare_onnx_with_pytorch(
             onnx_preds = torch.from_numpy(np.argmax(onnx_logits, axis=1).astype(np.int64))
 
             agreement = (torch_preds == onnx_preds).float().mean().item()
-            dice = compute_dice_per_class(onnx_preds, torch_preds, num_classes=num_classes, ignore_background=True)
+            dice = compute_dice_per_class(
+                onnx_preds,
+                torch_preds,
+                num_classes=int(resolved_model_metadata["num_classes"]),
+                ignore_background=True,
+            )
 
             total_agreement += agreement
             total_batches += 1
