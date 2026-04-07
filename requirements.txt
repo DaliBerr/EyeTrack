@@ -30,9 +30,6 @@ requests==2.33.0
 setuptools==70.2.0
 six==1.17.0
 sympy==1.13.1
-torch==2.5.1
-torchaudio==2.5.1
-torchvision==0.20.1
 tqdm==4.67.3
 typing_extensions==4.15.0
 tzdata==2025.3
