@@ -1,0 +1,13 @@
+# Raspberry Pi deployment dependencies for realtime_eye_direction_pi.py
+# System packages (Raspberry Pi OS) are still required:
+# python3-picamera2 python3-opencv python3-gi
+# gir1.2-gst-rtsp-server-1.0 gstreamer1.0-tools
+# gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+# gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+
+numpy==2.4.3
+onnx>=1.16,<2
+onnxruntime>=1.20,<2
+opencv-python==4.13.0.92
+pillow==12.1.1
+torch==2.5.1

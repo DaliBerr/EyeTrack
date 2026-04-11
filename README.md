@@ -51,6 +51,7 @@ dataset_root/
 - `baseline_filter_sequences.py` / `baseline_filter_sequences_v2.py` / `baseline_filter_sequences_v3.py`: 时序异常清洗与平滑
 - `analyze_sequence_geometry.py`: 生成序列分析 CSV 和曲线图
 - `realtime_eye_direction.py`: 摄像头实时演示
+- `realtime_eye_direction_pi.py`: 树莓派 5 + Picamera2 双 CSI 实时视线元数据
 - `main.py`: 数据样本检查入口
 
 ## 常用命令
@@ -202,3 +203,42 @@ python quantize_onnx_model.py \
 - 当前轻量模型默认配置为 `base_channels=16`、输入尺寸 `384x240`、预处理模式 `raw grayscale + resize + normalize`。
 - 模型默认类别数为 4，代码中约定 `iris=2`、`pupil=3`。
 - 结果目录如 `checkpoints/`、`sequence_outputs/`、`sequence_analysis/`、`vis_val/` 已在 `.gitignore` 中排除。
+
+## 树莓派 5 双 CSI 实时运行
+
+树莓派专用实时入口是 `realtime_eye_direction_pi.py`，不会复用桌面版 `realtime_eye_direction.py`。
+
+### 树莓派额外依赖
+
+建议在 Raspberry Pi OS 上通过系统包安装：
+
+```bash
+sudo apt install -y python3-picamera2 python3-opencv python3-gi \
+  gir1.2-gst-rtsp-server-1.0 gstreamer1.0-tools \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+```
+
+再安装树莓派脚本的 Python 依赖：
+
+```bash
+pip install -r requirements_pi.txt
+```
+
+### 启动示例
+
+```bash
+python realtime_eye_direction_pi.py \
+  --model_path ./checkpoints/unet_b16_384x240_int8_qdq.onnx \
+  --eye_camera_id 0 \
+  --fpv_camera_id 1 \
+  --feature_mode iris_only
+```
+
+默认行为：
+
+- `cam0` 使用 `YUV420@384x240` 直接采集近眼红外图，不走 ROI，不做 CPU resize。
+- `cam1` 作为 FPV 输出底图，RTSP 默认地址为 `rtsp://<pi-ip>:8554/fpv`。
+- 树莓派端不会把 gaze/calibration 图形直接画进 FPV 视频；RTSP 只发送原始 FPV 视频。
+- gaze、校准目标和状态会以 JSON 行输出到 stdout，可选再用 `--metadata_udp_host/--metadata_udp_port` 通过 UDP 额外发送给接收端叠加。
+- 终端按键：`s` 开始校准，`x` 取消校准，`r` 重置跟踪与校准，`q` 退出。

@@ -1,6 +1,5 @@
 import argparse
 import time
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
@@ -11,16 +10,37 @@ import torch
 from torch import nn
 
 from eyetrack.config import (
-    DEFAULT_IN_CHANNELS,
     DEFAULT_BASE_CHANNELS,
     DEFAULT_CHECKPOINT_PATH,
+    DEFAULT_IN_CHANNELS,
     DEFAULT_INPUT_HEIGHT,
     DEFAULT_INPUT_WIDTH,
     DEFAULT_NUM_CLASSES,
     DEFAULT_USE_AMP,
 )
 from eyetrack.data.preprocessing import ResizeMeta, preprocess_bgr_frame
+from eyetrack.deployment.onnx_tools import build_onnx_session, require_onnxruntime
+from eyetrack.gaze import (
+    CalibrationSession,
+    GazeFeatureResult,
+    RegionGeometry,
+    advance_calibration_session,
+    begin_calibration_session,
+    build_empty_gaze_feature_result,
+    build_five_point_calibration_points,
+    cancel_calibration_session,
+    extract_gaze_features_from_label_map,
+    predict_screen_point,
+    resolve_tracking_features,
+)
 from eyetrack.models.unet import UNet
+from eyetrack.realtime_gaze import (
+    build_calibration_canvas,
+    destroy_window,
+    draw_screen_preview_panel,
+    ensure_fullscreen_window,
+    format_optional_pair,
+)
 from eyetrack.runtime import autocast_context, resolve_device
 from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata
 
@@ -31,6 +51,7 @@ from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_mode
 CHECKPOINT_PATH = DEFAULT_CHECKPOINT_PATH
 CAMERA_INDEX = 0
 WINDOW_NAME = "Realtime Eye Direction Demo"
+CALIBRATION_WINDOW_NAME = "Realtime Gaze Calibration"
 
 PREFERRED_CAMERA_WIDTH = 1280
 PREFERRED_CAMERA_HEIGHT = 720
@@ -47,12 +68,21 @@ USE_AMP = DEFAULT_USE_AMP
 
 IRIS_CLASS_ID = 2
 PUPIL_CLASS_ID = 3
+KERNEL_SIZE = 3
+IRIS_MIN_AREA = 100
+PUPIL_MIN_AREA = 20
 
 EMA_ALPHA = 0.35
 MAX_VALID_NORM_RADIUS = 0.85
 ARROW_LENGTH = 120
 SHOW_DEBUG_TEXT = True
 USE_MIRROR_VIEW = False
+SCREEN_PREVIEW_SIZE = 220
+STALE_SCREEN_POINT_TIMEOUT_MS = 300
+DEFAULT_CALIBRATION_SETTLE_MS = 500
+DEFAULT_CALIBRATION_CAPTURE_MS = 1000
+DEFAULT_CALIBRATION_MIN_VALID_FRAMES = 15
+DEFAULT_CALIBRATION_MARGIN = 0.1
 
 ROI_PREVIEW_WIDTH = 220
 ROI_PREVIEW_HEIGHT = 140
@@ -117,14 +147,23 @@ class ROIInteractionState:
     drag_current: Optional[Tuple[int, int]] = None
     frame_width: int = 0
     frame_height: int = 0
+    roi_revision: int = 0
 
     def set_frame_shape(self, frame: np.ndarray) -> None:
         self.frame_height, self.frame_width = frame.shape[:2]
 
+    def set_active_roi(self, roi: ROIBox) -> None:
+        if self.active_roi != roi:
+            self.active_roi = roi
+            self.roi_revision += 1
+
     def clear(self) -> None:
+        had_roi = self.active_roi is not None
         self.active_roi = None
         self.drag_start = None
         self.drag_current = None
+        if had_roi:
+            self.roi_revision += 1
 
     def get_drag_roi(self) -> Optional[ROIBox]:
         if self.drag_start is None or self.drag_current is None:
@@ -166,13 +205,23 @@ ROI_STATE = ROIInteractionState()
 
 @dataclass
 class RuntimeModelConfig:
-    checkpoint_path: str
+    model_path: str
+    runtime_type: str
     in_channels: int
     num_classes: int
     base_channels: int
     input_width: int
     input_height: int
     use_amp: bool
+    onnx_backend: str = "cpu"
+
+
+@dataclass
+class RuntimePredictor:
+    runtime_type: str
+    torch_model: Optional[nn.Module] = None
+    onnx_session: Any = None
+    onnx_input_name: Optional[str] = None
 
 
 # =========================
@@ -196,7 +245,7 @@ def handle_mouse(event: int, x: int, y: int, flags: int, param: Any) -> None:
         ROI_STATE.drag_current = (x, y)
         drag_roi = ROI_STATE.get_drag_roi()
         if drag_roi is not None and drag_roi.is_valid():
-            ROI_STATE.active_roi = drag_roi
+            ROI_STATE.set_active_roi(drag_roi)
         ROI_STATE.drag_start = None
         ROI_STATE.drag_current = None
 
@@ -228,182 +277,84 @@ def preprocess_frame(frame_bgr: np.ndarray, input_width: int, input_height: int)
     )
 
 
+def is_onnx_model_path(model_path: str) -> bool:
+    return Path(model_path).suffix.lower() == ".onnx"
+
+
+def resolve_onnx_runtime_config(model_path: str, onnx_backend: str) -> RuntimeModelConfig:
+    ort = require_onnxruntime()
+    session = build_onnx_session(model_path=model_path, backend=onnx_backend, enable_profiling=False)
+    input_meta = session.get_inputs()[0]
+    output_meta = session.get_outputs()[0] if len(session.get_outputs()) > 0 else None
+    custom_metadata = session.get_modelmeta().custom_metadata_map
+
+    input_shape = list(input_meta.shape)
+    output_shape = list(output_meta.shape) if output_meta is not None else []
+
+    def _shape_dim(shape: list[Any], index: int, fallback: int) -> int:
+        if index >= len(shape):
+            return fallback
+        value = shape[index]
+        return int(value) if isinstance(value, int) else fallback
+
+    del ort
+    return RuntimeModelConfig(
+        model_path=str(model_path),
+        runtime_type="onnx",
+        in_channels=int(custom_metadata.get("in_channels", _shape_dim(input_shape, 1, DEFAULT_IN_CHANNELS))),
+        num_classes=int(custom_metadata.get("num_classes", _shape_dim(output_shape, 1, NUM_CLASSES))),
+        base_channels=int(custom_metadata.get("base_channels", BASE_CHANNELS)),
+        input_width=int(custom_metadata.get("input_width", _shape_dim(input_shape, 3, MODEL_INPUT_WIDTH))),
+        input_height=int(custom_metadata.get("input_height", _shape_dim(input_shape, 2, MODEL_INPUT_HEIGHT))),
+        use_amp=False,
+        onnx_backend=onnx_backend,
+    )
+
+
 @torch.no_grad()
-def predict_label_map(model: nn.Module, input_tensor: torch.Tensor, device: torch.device, use_amp: bool) -> np.ndarray:
-    with autocast_context(device=device, use_amp=use_amp):
-        logits = model(input_tensor.to(device))
-    pred = torch.argmax(logits, dim=1)[0].detach().cpu().numpy().astype(np.uint8)
-    return pred
+def predict_label_map(
+    predictor: RuntimePredictor,
+    input_tensor: torch.Tensor,
+    device: torch.device,
+    use_amp: bool,
+) -> np.ndarray:
+    if predictor.runtime_type == "pytorch":
+        if predictor.torch_model is None:
+            raise RuntimeError("PyTorch predictor 未正确初始化。")
+        with autocast_context(device=device, use_amp=use_amp):
+            logits = predictor.torch_model(input_tensor.to(device))
+        return torch.argmax(logits, dim=1)[0].detach().cpu().numpy().astype(np.uint8)
+
+    if predictor.runtime_type == "onnx":
+        if predictor.onnx_session is None or predictor.onnx_input_name is None:
+            raise RuntimeError("ONNX predictor 未正确初始化。")
+        logits = predictor.onnx_session.run(
+            None,
+            {predictor.onnx_input_name: input_tensor.cpu().numpy().astype(np.float32)},
+        )[0]
+        return np.argmax(logits, axis=1)[0].astype(np.uint8)
+
+    raise ValueError(f"不支持的 predictor runtime_type: {predictor.runtime_type}")
 
 
 # =========================
 # 分割与几何
 # =========================
-def build_empty_geometry_result() -> Dict[str, Any]:
-    empty_region = RegionGeometry(area=0, center_x=None, center_y=None, ellipse=None)
-    return {
-        "iris_mask": None,
-        "pupil_mask": None,
-        "iris_geometry": empty_region,
-        "pupil_geometry": empty_region,
-        "norm_dx": None,
-        "norm_dy": None,
-        "norm_radius": None,
-        "valid": False,
-    }
+def build_empty_geometry_result() -> GazeFeatureResult:
+    return build_empty_gaze_feature_result()
 
 
-def extract_class_binary_mask(label_map: np.ndarray, class_id: int) -> np.ndarray:
-    return (label_map == class_id).astype(np.uint8)
-
-
-def keep_largest_connected_component(binary_mask: np.ndarray) -> np.ndarray:
-    if binary_mask.sum() == 0:
-        return binary_mask.copy()
-
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask, connectivity=8)
-    if num_labels <= 1:
-        return binary_mask.copy()
-
-    largest_label = 1
-    largest_area = stats[1, cv2.CC_STAT_AREA]
-
-    for label_id in range(2, num_labels):
-        area = stats[label_id, cv2.CC_STAT_AREA]
-        if area > largest_area:
-            largest_area = area
-            largest_label = label_id
-
-    return (labels == largest_label).astype(np.uint8)
-
-
-def clean_binary_mask(binary_mask: np.ndarray, kernel_size: int = 3) -> np.ndarray:
-    if binary_mask.sum() == 0:
-        return binary_mask.copy()
-
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-    cleaned = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
-    return cleaned
-
-
-def compute_mask_centroid(binary_mask: np.ndarray) -> Tuple[Optional[float], Optional[float]]:
-    if binary_mask.sum() == 0:
-        return None, None
-
-    moments = cv2.moments(binary_mask)
-    if abs(moments["m00"]) < 1e-8:
-        return None, None
-
-    center_x = moments["m10"] / moments["m00"]
-    center_y = moments["m01"] / moments["m00"]
-    return float(center_x), float(center_y)
-
-
-def fit_ellipse_to_mask(binary_mask: np.ndarray) -> Optional[EllipseResult]:
-    if binary_mask.sum() == 0:
-        return None
-
-    contour_img = (binary_mask * 255).astype(np.uint8)
-    contours, _ = cv2.findContours(contour_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    if len(contours) == 0:
-        return None
-
-    contour = max(contours, key=cv2.contourArea)
-    if len(contour) < 5:
-        return None
-
-    ellipse = cv2.fitEllipse(contour)
-    (center_x, center_y), (axis_a, axis_b), angle_deg = ellipse
-
-    major_axis = float(max(axis_a, axis_b))
-    minor_axis = float(min(axis_a, axis_b))
-    fixed_angle = float(angle_deg)
-
-    if axis_b > axis_a:
-        fixed_angle = (fixed_angle + 90.0) % 180.0
-
-    return EllipseResult(
-        center_x=float(center_x),
-        center_y=float(center_y),
-        major_axis=major_axis,
-        minor_axis=minor_axis,
-        angle_deg=fixed_angle,
+def extract_eye_geometry_from_label_map(pred_label_map: np.ndarray) -> GazeFeatureResult:
+    return extract_gaze_features_from_label_map(
+        pred_label_map=pred_label_map,
+        valid_mask=None,
+        iris_class_id=IRIS_CLASS_ID,
+        pupil_class_id=PUPIL_CLASS_ID,
+        kernel_size=KERNEL_SIZE,
+        iris_min_area=IRIS_MIN_AREA,
+        pupil_min_area=PUPIL_MIN_AREA,
+        max_valid_norm_radius=MAX_VALID_NORM_RADIUS,
     )
-
-
-def extract_region_geometry(binary_mask: np.ndarray) -> RegionGeometry:
-    area = int(binary_mask.sum())
-    if area == 0:
-        return RegionGeometry(area=0, center_x=None, center_y=None, ellipse=None)
-
-    center_x, center_y = compute_mask_centroid(binary_mask)
-    ellipse = fit_ellipse_to_mask(binary_mask)
-    return RegionGeometry(area=area, center_x=center_x, center_y=center_y, ellipse=ellipse)
-
-
-def rotate_vector(dx: float, dy: float, angle_deg: float) -> Tuple[float, float]:
-    theta = math.radians(angle_deg)
-    cos_t = math.cos(theta)
-    sin_t = math.sin(theta)
-    return cos_t * dx - sin_t * dy, sin_t * dx + cos_t * dy
-
-
-def extract_eye_geometry_from_label_map(pred_label_map: np.ndarray) -> Dict[str, Any]:
-    iris_mask = extract_class_binary_mask(pred_label_map, IRIS_CLASS_ID)
-    pupil_mask = extract_class_binary_mask(pred_label_map, PUPIL_CLASS_ID)
-
-    iris_mask = keep_largest_connected_component(iris_mask)
-    pupil_mask = keep_largest_connected_component(pupil_mask)
-
-    iris_mask = clean_binary_mask(iris_mask, kernel_size=3)
-    pupil_mask = clean_binary_mask(pupil_mask, kernel_size=3)
-
-    iris_geometry = extract_region_geometry(iris_mask)
-    pupil_geometry = extract_region_geometry(pupil_mask)
-
-    norm_dx = None
-    norm_dy = None
-    norm_radius = None
-
-    if (
-        iris_geometry.center_x is not None and iris_geometry.center_y is not None and
-        pupil_geometry.center_x is not None and pupil_geometry.center_y is not None and
-        iris_geometry.ellipse is not None
-    ):
-        offset_dx = float(pupil_geometry.center_x - iris_geometry.center_x)
-        offset_dy = float(pupil_geometry.center_y - iris_geometry.center_y)
-
-        local_dx, local_dy = rotate_vector(offset_dx, offset_dy, angle_deg=-iris_geometry.ellipse.angle_deg)
-        semi_major = iris_geometry.ellipse.major_axis / 2.0
-        semi_minor = iris_geometry.ellipse.minor_axis / 2.0
-
-        if semi_major > 1e-6:
-            norm_dx = float(local_dx / semi_major)
-        if semi_minor > 1e-6:
-            norm_dy = float(local_dy / semi_minor)
-        if norm_dx is not None and norm_dy is not None:
-            norm_radius = float(math.sqrt(norm_dx * norm_dx + norm_dy * norm_dy))
-
-    valid = (
-        iris_geometry.ellipse is not None and
-        pupil_geometry.ellipse is not None and
-        norm_dx is not None and
-        norm_dy is not None and
-        norm_radius is not None and
-        norm_radius <= MAX_VALID_NORM_RADIUS
-    )
-
-    return {
-        "iris_mask": iris_mask,
-        "pupil_mask": pupil_mask,
-        "iris_geometry": iris_geometry,
-        "pupil_geometry": pupil_geometry,
-        "norm_dx": norm_dx,
-        "norm_dy": norm_dy,
-        "norm_radius": norm_radius,
-        "valid": valid,
-    }
 
 
 # =========================
@@ -515,22 +466,40 @@ def draw_roi_overlay(frame: np.ndarray, selected_roi: Optional[ROIBox]) -> np.nd
     return output
 
 
+def get_calibration_state(session: Optional[CalibrationSession]) -> Tuple[str, str, bool]:
+    if session is None:
+        return "idle", "none", False
+    return session.state, session.calibration_step, session.is_calibrated
+
+
 def put_debug_text(
     frame: np.ndarray,
-    geometry_result: Dict[str, Any],
+    geometry_result: GazeFeatureResult,
+    feature_mode: str,
+    selected_feature_x: Optional[float],
+    selected_feature_y: Optional[float],
+    selected_feature_valid: bool,
+    selected_feature_reasons: tuple[str, ...],
     preprocess_meta: Optional[ResizeMeta],
     smoothed_dx: Optional[float],
     smoothed_dy: Optional[float],
     fps: float,
     camera_resolution: Tuple[int, int],
     selected_roi: Optional[ROIBox],
+    calibration_session: Optional[CalibrationSession],
+    screen_uv: Optional[Tuple[float, float]],
+    tracking_valid: bool,
+    status_message: str,
 ) -> np.ndarray:
     output = frame.copy()
+    calibration_state, calibration_step, calibrated = get_calibration_state(calibration_session)
+    invalid_reason_text = "none" if len(geometry_result.invalid_reasons) == 0 else "|".join(geometry_result.invalid_reasons)
+    feature_reason_text = "none" if len(selected_feature_reasons) == 0 else "|".join(selected_feature_reasons)
 
     lines = [
         f"FPS: {fps:.1f}",
         f"camera: {camera_resolution[0]}x{camera_resolution[1]}",
-        "ROI: drag left mouse to select | c clear | r reset ema | q quit",
+        "ROI: drag left mouse | c clear | r reset | s calibrate | x cancel | q quit",
     ]
 
     if selected_roi is not None:
@@ -546,13 +515,32 @@ def put_debug_text(
         lines.append("scale_xy: none")
 
     lines.extend([
-        f"valid: {geometry_result['valid']}",
-        f"norm_dx: {geometry_result['norm_dx']}",
-        f"norm_dy: {geometry_result['norm_dy']}",
-        f"norm_r : {geometry_result['norm_radius']}",
+        f"valid: {geometry_result.valid}",
+        f"iris_area: {geometry_result.iris_geometry.area}",
+        f"pupil_area: {geometry_result.pupil_geometry.area}",
+        f"norm_dx: {geometry_result.norm_dx}",
+        f"norm_dy: {geometry_result.norm_dy}",
+        f"norm_r : {geometry_result.norm_radius}",
+        f"iris_fx: {geometry_result.iris_feature_x}",
+        f"iris_fy: {geometry_result.iris_feature_y}",
+        f"feature_mode: {feature_mode}",
+        f"feature_x: {selected_feature_x}",
+        f"feature_y: {selected_feature_y}",
+        f"feature_valid: {selected_feature_valid}",
+        f"feature_invalid: {feature_reason_text}",
         f"sm_dx  : {smoothed_dx}",
         f"sm_dy  : {smoothed_dy}",
+        f"invalid: {invalid_reason_text}",
+        f"calibration_state: {calibration_state}",
+        f"calibration_step : {calibration_step}",
+        f"calibrated: {calibrated}",
+        f"screen_uv: {format_optional_pair(screen_uv)}",
+        f"tracking_valid: {tracking_valid}",
+        f"message: {status_message}",
     ])
+
+    if calibration_session is not None and calibration_session.is_active:
+        lines.append(f"capture_samples: {len(calibration_session.current_point_samples)}/{calibration_session.min_valid_frames}")
 
     y = 24
     for line in lines:
@@ -586,37 +574,89 @@ def draw_preview_panel(frame: np.ndarray, image: np.ndarray, label: str, top_lef
 
 def build_visualization(
     frame_bgr: np.ndarray,
-    geometry_result: Dict[str, Any],
+    geometry_result: GazeFeatureResult,
+    feature_mode: str,
+    selected_feature_x: Optional[float],
+    selected_feature_y: Optional[float],
+    selected_feature_valid: bool,
+    selected_feature_reasons: tuple[str, ...],
     preprocess_meta: Optional[ResizeMeta],
     selected_roi: Optional[ROIBox],
     smoothed_dx: Optional[float],
     smoothed_dy: Optional[float],
     fps: float,
     camera_resolution: Tuple[int, int],
+    calibration_session: Optional[CalibrationSession],
+    calibration_points: list,
+    screen_uv: Optional[Tuple[float, float]],
+    tracking_valid: bool,
+    status_message: str,
 ) -> np.ndarray:
     vis = frame_bgr.copy()
 
-    vis = draw_ellipse_on_frame(vis, geometry_result["iris_geometry"].ellipse, preprocess_meta, selected_roi, (0, 255, 0), 2)
-    vis = draw_ellipse_on_frame(vis, geometry_result["pupil_geometry"].ellipse, preprocess_meta, selected_roi, (0, 0, 255), 2)
+    vis = draw_ellipse_on_frame(vis, geometry_result.iris_geometry.ellipse, preprocess_meta, selected_roi, (0, 255, 0), 2)
+    vis = draw_ellipse_on_frame(vis, geometry_result.pupil_geometry.ellipse, preprocess_meta, selected_roi, (0, 0, 255), 2)
 
-    vis = draw_center_on_frame(vis, geometry_result["iris_geometry"].center_x, geometry_result["iris_geometry"].center_y, preprocess_meta, selected_roi, (0, 255, 0), 4)
-    vis = draw_center_on_frame(vis, geometry_result["pupil_geometry"].center_x, geometry_result["pupil_geometry"].center_y, preprocess_meta, selected_roi, (0, 0, 255), 4)
+    vis = draw_center_on_frame(vis, geometry_result.iris_geometry.center_x, geometry_result.iris_geometry.center_y, preprocess_meta, selected_roi, (0, 255, 0), 4)
+    vis = draw_center_on_frame(vis, geometry_result.pupil_geometry.center_x, geometry_result.pupil_geometry.center_y, preprocess_meta, selected_roi, (0, 0, 255), 4)
 
-    vis = draw_direction_arrow(vis, geometry_result["iris_geometry"], preprocess_meta, selected_roi, smoothed_dx, smoothed_dy)
+    vis = draw_direction_arrow(vis, geometry_result.iris_geometry, preprocess_meta, selected_roi, smoothed_dx, smoothed_dy)
     vis = draw_corner_indicator(vis, smoothed_dx, smoothed_dy)
     vis = draw_roi_overlay(vis, selected_roi)
 
+    active_point_name = None
+    calibrated = False
+    if calibration_session is not None:
+        active_point = calibration_session.current_point if calibration_session.is_active else None
+        active_point_name = active_point.name if active_point is not None else None
+        calibrated = calibration_session.is_calibrated
+
+    vis = draw_screen_preview_panel(
+        vis,
+        calibration_points=calibration_points,
+        screen_uv=screen_uv,
+        tracking_valid=tracking_valid,
+        calibrated=calibrated,
+        active_point_name=active_point_name,
+        panel_size=SCREEN_PREVIEW_SIZE,
+    )
+
     if SHOW_DEBUG_TEXT:
-        vis = put_debug_text(vis, geometry_result, preprocess_meta, smoothed_dx, smoothed_dy, fps, camera_resolution, selected_roi)
+        vis = put_debug_text(
+            vis,
+            geometry_result,
+            feature_mode,
+            selected_feature_x,
+            selected_feature_y,
+            selected_feature_valid,
+            selected_feature_reasons,
+            preprocess_meta,
+            smoothed_dx,
+            smoothed_dy,
+            fps,
+            camera_resolution,
+            selected_roi,
+            calibration_session,
+            screen_uv,
+            tracking_valid,
+            status_message,
+        )
 
     return vis
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="实时眼动方向验证")
-    parser.add_argument("--checkpoint_path", type=str, default=CHECKPOINT_PATH, help="待加载的 checkpoint 路径")
+    parser.add_argument("--model_path", type=str, default=None, help="待加载的模型路径，支持 .pth 与 .onnx")
+    parser.add_argument("--checkpoint_path", type=str, default=CHECKPOINT_PATH, help="兼容旧参数名；若未传 --model_path，则使用该路径")
     parser.add_argument("--camera_index", type=int, default=CAMERA_INDEX, help="摄像头索引")
     parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
+    parser.add_argument("--onnx_backend", type=str, default="cpu", choices=["cpu", "nnapi"], help="ONNX Runtime backend，仅在 .onnx 模型时生效")
+    parser.add_argument("--feature_mode", type=str, choices=["pupil_iris", "iris_only"], default="pupil_iris", help="实时校准与跟踪使用的特征模式")
+    parser.add_argument("--calibration_settle_ms", type=int, default=DEFAULT_CALIBRATION_SETTLE_MS, help="校准点切换后的稳定等待时长")
+    parser.add_argument("--calibration_capture_ms", type=int, default=DEFAULT_CALIBRATION_CAPTURE_MS, help="每个校准点的采样时长")
+    parser.add_argument("--calibration_min_valid_frames", type=int, default=DEFAULT_CALIBRATION_MIN_VALID_FRAMES, help="每个校准点要求的最少有效帧数")
+    parser.add_argument("--calibration_margin", type=float, default=DEFAULT_CALIBRATION_MARGIN, help="四角校准点距边缘的归一化留白")
 
     amp_group = parser.add_mutually_exclusive_group()
     amp_group.add_argument("--amp", dest="amp", action="store_true", help="强制启用 CUDA AMP")
@@ -626,13 +666,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_runtime_model_config(checkpoint_path: str, amp_override: Optional[bool]) -> RuntimeModelConfig:
-    checkpoint_file = Path(checkpoint_path)
-    if not checkpoint_file.exists():
-        raise FileNotFoundError(f"未找到 checkpoint: {checkpoint_file}")
+def resolve_runtime_model_config(model_path: str, amp_override: Optional[bool], onnx_backend: str) -> RuntimeModelConfig:
+    model_file = Path(model_path)
+    if not model_file.exists():
+        raise FileNotFoundError(f"未找到模型文件: {model_file}")
+
+    if is_onnx_model_path(str(model_file)):
+        runtime_config = resolve_onnx_runtime_config(model_path=str(model_file), onnx_backend=onnx_backend)
+        return runtime_config
 
     metadata = resolve_model_metadata(
-        checkpoint_path=str(checkpoint_file),
+        checkpoint_path=str(model_file),
         device="cpu",
         in_channels=DEFAULT_IN_CHANNELS,
         num_classes=NUM_CLASSES,
@@ -642,13 +686,15 @@ def resolve_runtime_model_config(checkpoint_path: str, amp_override: Optional[bo
         amp=USE_AMP,
     )
     runtime_config = RuntimeModelConfig(
-        checkpoint_path=str(checkpoint_file),
+        model_path=str(model_file),
+        runtime_type="pytorch",
         in_channels=int(metadata.get("in_channels", DEFAULT_IN_CHANNELS)),
         num_classes=int(metadata.get("num_classes", NUM_CLASSES)),
         base_channels=int(metadata.get("base_channels", BASE_CHANNELS)),
         input_width=int(metadata.get("input_width", MODEL_INPUT_WIDTH)),
         input_height=int(metadata.get("input_height", MODEL_INPUT_HEIGHT)),
         use_amp=bool(metadata.get("amp", USE_AMP)),
+        onnx_backend=onnx_backend,
     )
 
     if amp_override is not None:
@@ -657,17 +703,52 @@ def resolve_runtime_model_config(checkpoint_path: str, amp_override: Optional[bo
     return runtime_config
 
 
+def build_runtime_predictor(runtime_config: RuntimeModelConfig, device: torch.device) -> RuntimePredictor:
+    if runtime_config.runtime_type == "pytorch":
+        model = UNet(
+            in_channels=runtime_config.in_channels,
+            num_classes=runtime_config.num_classes,
+            base_channels=runtime_config.base_channels,
+        ).to(device)
+        load_info = load_checkpoint_flexible(
+            model=model,
+            checkpoint_path=runtime_config.model_path,
+            device=device,
+            optimizer=None,
+        )
+        print("checkpoint 信息:", load_info)
+        model.eval()
+        return RuntimePredictor(runtime_type="pytorch", torch_model=model)
+
+    if runtime_config.runtime_type == "onnx":
+        session = build_onnx_session(
+            model_path=runtime_config.model_path,
+            backend=runtime_config.onnx_backend,
+            enable_profiling=False,
+        )
+        print("onnx providers:", session.get_providers())
+        return RuntimePredictor(
+            runtime_type="onnx",
+            onnx_session=session,
+            onnx_input_name=session.get_inputs()[0].name,
+        )
+
+    raise ValueError(f"不支持的 runtime_type: {runtime_config.runtime_type}")
+
+
 def print_runtime_config(runtime_config: RuntimeModelConfig, device: torch.device) -> None:
-    print("checkpoint:", runtime_config.checkpoint_path)
+    print("model_path:", runtime_config.model_path)
     print(
         "model config:",
         {
+            "runtime_type": runtime_config.runtime_type,
             "in_channels": runtime_config.in_channels,
             "num_classes": runtime_config.num_classes,
             "base_channels": runtime_config.base_channels,
             "input_width": runtime_config.input_width,
             "input_height": runtime_config.input_height,
-            "amp": runtime_config.use_amp and device.type == "cuda",
+            "amp": runtime_config.use_amp and runtime_config.runtime_type == "pytorch" and device.type == "cuda",
+            "onnx_backend": runtime_config.onnx_backend if runtime_config.runtime_type == "onnx" else None,
         },
     )
 
@@ -677,26 +758,15 @@ def print_runtime_config(runtime_config: RuntimeModelConfig, device: torch.devic
 # =========================
 def main() -> None:
     args = parse_args()
-    runtime_config = resolve_runtime_model_config(checkpoint_path=args.checkpoint_path, amp_override=args.amp)
+    model_path = args.model_path if args.model_path is not None else args.checkpoint_path
+    runtime_config = resolve_runtime_model_config(model_path=model_path, amp_override=args.amp, onnx_backend=args.onnx_backend)
 
     device = resolve_device(args.device)
-    amp_enabled = runtime_config.use_amp and device.type == "cuda"
+    amp_enabled = runtime_config.runtime_type == "pytorch" and runtime_config.use_amp and device.type == "cuda"
     print("device:", device)
     print_runtime_config(runtime_config, device)
 
-    model = UNet(
-        in_channels=runtime_config.in_channels,
-        num_classes=runtime_config.num_classes,
-        base_channels=runtime_config.base_channels,
-    ).to(device)
-    load_info = load_checkpoint_flexible(
-        model=model,
-        checkpoint_path=runtime_config.checkpoint_path,
-        device=device,
-        optimizer=None,
-    )
-    print("checkpoint 信息:", load_info)
-    model.eval()
+    predictor = build_runtime_predictor(runtime_config=runtime_config, device=device)
 
     cap = cv2.VideoCapture(args.camera_index)
     if not cap.isOpened():
@@ -709,81 +779,224 @@ def main() -> None:
     cv2.setMouseCallback(WINDOW_NAME, handle_mouse)
 
     ema_filter = OnlineEMAFilter(alpha=EMA_ALPHA)
+    calibration_session: Optional[CalibrationSession] = None
+    calibration_window_open = False
+    calibration_points = build_five_point_calibration_points(args.calibration_margin)
+    displayed_screen_uv: Optional[Tuple[float, float]] = None
+    last_valid_screen_ts_ms: Optional[float] = None
+    tracking_valid = False
+    status_message = "请选择 ROI，然后按 s 开始五点校准。"
+    last_roi_revision = ROI_STATE.roi_revision
     prev_time = time.time()
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("摄像头读取失败。")
-            break
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("摄像头读取失败。")
+                break
 
-        if USE_MIRROR_VIEW:
-            frame = cv2.flip(frame, 1)
+            if USE_MIRROR_VIEW:
+                frame = cv2.flip(frame, 1)
 
-        ROI_STATE.set_frame_shape(frame)
+            ROI_STATE.set_frame_shape(frame)
 
-        selected_roi = ROI_STATE.active_roi
-        geometry_result = build_empty_geometry_result()
-        preprocess_meta: Optional[ResizeMeta] = None
-        roi_gray_preview: Optional[np.ndarray] = None
-        pred_label_map: Optional[np.ndarray] = None
+            if ROI_STATE.roi_revision != last_roi_revision:
+                last_roi_revision = ROI_STATE.roi_revision
+                ema_filter.reset()
+                calibration_session = None
+                calibration_window_open = False
+                destroy_window(CALIBRATION_WINDOW_NAME)
+                displayed_screen_uv = None
+                last_valid_screen_ts_ms = None
+                tracking_valid = False
+                status_message = "ROI 已更新，校准已失效。"
 
-        if selected_roi is not None and selected_roi.is_valid():
-            roi_frame = selected_roi.crop(frame)
-            if roi_frame.size > 0:
-                roi_gray_preview, input_tensor, preprocess_meta = preprocess_frame(
-                    roi_frame,
-                    input_width=runtime_config.input_width,
-                    input_height=runtime_config.input_height,
+            selected_roi = ROI_STATE.active_roi
+            geometry_result = build_empty_geometry_result()
+            selected_feature_x: Optional[float] = None
+            selected_feature_y: Optional[float] = None
+            selected_feature_valid = False
+            selected_feature_reasons: tuple[str, ...] = tuple()
+            preprocess_meta: Optional[ResizeMeta] = None
+            roi_gray_preview: Optional[np.ndarray] = None
+            pred_label_map: Optional[np.ndarray] = None
+
+            if selected_roi is not None and selected_roi.is_valid():
+                roi_frame = selected_roi.crop(frame)
+                if roi_frame.size > 0:
+                    roi_gray_preview, input_tensor, preprocess_meta = preprocess_frame(
+                        roi_frame,
+                        input_width=runtime_config.input_width,
+                        input_height=runtime_config.input_height,
+                    )
+                    pred_label_map = predict_label_map(predictor, input_tensor, device, use_amp=amp_enabled)
+                    geometry_result = extract_eye_geometry_from_label_map(pred_label_map)
+
+            selected_feature_x, selected_feature_y, selected_feature_valid, selected_feature_reasons = resolve_tracking_features(
+                geometry_result,
+                feature_mode=args.feature_mode,
+            )
+
+            smoothed_dx, smoothed_dy = ema_filter.update(
+                selected_feature_x,
+                selected_feature_y,
+                selected_feature_valid,
+            )
+
+            now_ms = time.time() * 1000.0
+
+            if calibration_session is not None and calibration_session.is_active:
+                previous_state = calibration_session.state
+                calibration_session = advance_calibration_session(
+                    calibration_session,
+                    now_ms=now_ms,
+                    feature_dx=smoothed_dx,
+                    feature_dy=smoothed_dy,
+                    feature_valid=bool(selected_feature_valid and smoothed_dx is not None and smoothed_dy is not None),
                 )
-                pred_label_map = predict_label_map(model, input_tensor, device, use_amp=amp_enabled)
-                geometry_result = extract_eye_geometry_from_label_map(pred_label_map)
 
-        smoothed_dx, smoothed_dy = ema_filter.update(
-            geometry_result["norm_dx"],
-            geometry_result["norm_dy"],
-            geometry_result["valid"],
-        )
+                if calibration_session.state != previous_state:
+                    if calibration_session.state == "capturing":
+                        status_message = f"开始采样 {calibration_session.calibration_step}"
+                    elif calibration_session.state == "settling":
+                        status_message = f"请注视 {calibration_session.calibration_step}"
+                    elif calibration_session.state == "completed":
+                        calibration_points = calibration_session.points
+                        calibration_window_open = False
+                        destroy_window(CALIBRATION_WINDOW_NAME)
+                        status_message = "五点校准完成。"
+                        print(status_message)
+                    elif calibration_session.state == "failed":
+                        calibration_window_open = False
+                        destroy_window(CALIBRATION_WINDOW_NAME)
+                        status_message = calibration_session.failure_reason or "校准失败。"
+                        print(status_message)
 
-        now = time.time()
-        fps = 1.0 / max(now - prev_time, 1e-6)
-        prev_time = now
+            if calibration_session is not None and calibration_session.is_active:
+                if not calibration_window_open:
+                    ensure_fullscreen_window(CALIBRATION_WINDOW_NAME)
+                    calibration_window_open = True
+                calibration_canvas = build_calibration_canvas((camera_width, camera_height), calibration_session)
+                cv2.imshow(CALIBRATION_WINDOW_NAME, calibration_canvas)
+            elif calibration_window_open:
+                destroy_window(CALIBRATION_WINDOW_NAME)
+                calibration_window_open = False
 
-        vis = build_visualization(
-            frame_bgr=frame,
-            geometry_result=geometry_result,
-            preprocess_meta=preprocess_meta,
-            selected_roi=selected_roi,
-            smoothed_dx=smoothed_dx,
-            smoothed_dy=smoothed_dy,
-            fps=fps,
-            camera_resolution=(camera_width, camera_height),
-        )
+            calibration_model = calibration_session.model if calibration_session is not None and calibration_session.is_calibrated else None
+            tracking_valid = False
+            if calibration_model is not None and selected_feature_valid and smoothed_dx is not None and smoothed_dy is not None:
+                predicted_screen_uv = predict_screen_point(calibration_model, smoothed_dx, smoothed_dy)
+                if predicted_screen_uv is not None:
+                    displayed_screen_uv = predicted_screen_uv
+                    last_valid_screen_ts_ms = now_ms
+                    tracking_valid = True
+            elif calibration_model is None:
+                displayed_screen_uv = None
+                last_valid_screen_ts_ms = None
+            elif (
+                displayed_screen_uv is None
+                or last_valid_screen_ts_ms is None
+                or (now_ms - last_valid_screen_ts_ms) > STALE_SCREEN_POINT_TIMEOUT_MS
+            ):
+                displayed_screen_uv = None
+                last_valid_screen_ts_ms = None
 
-        if roi_gray_preview is not None:
-            preview_y = vis.shape[0] - ROI_PREVIEW_HEIGHT - 10
-            vis = draw_preview_panel(vis, roi_gray_preview, "ROI Gray", (10, preview_y), (ROI_PREVIEW_WIDTH, ROI_PREVIEW_HEIGHT), use_gray=True)
+            now = time.time()
+            fps = 1.0 / max(now - prev_time, 1e-6)
+            prev_time = now
 
-        if pred_label_map is not None:
-            pred_preview = (pred_label_map * 85).astype(np.uint8)
-            preview_y = vis.shape[0] - PRED_PREVIEW_HEIGHT - 10
-            vis = draw_preview_panel(vis, pred_preview, "Segmentation", (20 + ROI_PREVIEW_WIDTH, preview_y), (PRED_PREVIEW_WIDTH, PRED_PREVIEW_HEIGHT), use_gray=True)
+            vis = build_visualization(
+                frame_bgr=frame,
+                geometry_result=geometry_result,
+                feature_mode=args.feature_mode,
+                selected_feature_x=selected_feature_x,
+                selected_feature_y=selected_feature_y,
+                selected_feature_valid=selected_feature_valid,
+                selected_feature_reasons=selected_feature_reasons,
+                preprocess_meta=preprocess_meta,
+                selected_roi=selected_roi,
+                smoothed_dx=smoothed_dx,
+                smoothed_dy=smoothed_dy,
+                fps=fps,
+                camera_resolution=(camera_width, camera_height),
+                calibration_session=calibration_session,
+                calibration_points=calibration_points,
+                screen_uv=displayed_screen_uv,
+                tracking_valid=tracking_valid,
+                status_message=status_message,
+            )
 
-        cv2.imshow(WINDOW_NAME, vis)
+            if roi_gray_preview is not None:
+                preview_y = vis.shape[0] - ROI_PREVIEW_HEIGHT - 10
+                vis = draw_preview_panel(vis, roi_gray_preview, "ROI Gray", (10, preview_y), (ROI_PREVIEW_WIDTH, ROI_PREVIEW_HEIGHT), use_gray=True)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            break
-        elif key == ord("r"):
-            ema_filter.reset()
-            print("已重置 EMA 状态。")
-        elif key == ord("c"):
-            ROI_STATE.clear()
-            ema_filter.reset()
-            print("已清除 ROI 并重置 EMA。")
+            if pred_label_map is not None:
+                pred_preview = (pred_label_map * 85).astype(np.uint8)
+                preview_y = vis.shape[0] - PRED_PREVIEW_HEIGHT - 10
+                vis = draw_preview_panel(vis, pred_preview, "Segmentation", (20 + ROI_PREVIEW_WIDTH, preview_y), (PRED_PREVIEW_WIDTH, PRED_PREVIEW_HEIGHT), use_gray=True)
 
-    cap.release()
-    cv2.destroyAllWindows()
+            cv2.imshow(WINDOW_NAME, vis)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            elif key == ord("r"):
+                ema_filter.reset()
+                calibration_session = None
+                calibration_window_open = False
+                destroy_window(CALIBRATION_WINDOW_NAME)
+                displayed_screen_uv = None
+                last_valid_screen_ts_ms = None
+                tracking_valid = False
+                status_message = "已重置 EMA 与校准状态。"
+                print(status_message)
+            elif key == ord("c"):
+                ROI_STATE.clear()
+                ema_filter.reset()
+                calibration_session = None
+                calibration_window_open = False
+                destroy_window(CALIBRATION_WINDOW_NAME)
+                displayed_screen_uv = None
+                last_valid_screen_ts_ms = None
+                tracking_valid = False
+                status_message = "已清除 ROI，校准已失效。"
+                print(status_message)
+            elif key == ord("s"):
+                if selected_roi is None or not selected_roi.is_valid():
+                    status_message = "请先框选有效 ROI，再开始校准。"
+                    print(status_message)
+                else:
+                    ema_filter.reset()
+                    calibration_session = begin_calibration_session(
+                        now_ms=now_ms,
+                        settle_ms=args.calibration_settle_ms,
+                        capture_ms=args.calibration_capture_ms,
+                        min_valid_frames=args.calibration_min_valid_frames,
+                        margin=args.calibration_margin,
+                    )
+                    calibration_points = calibration_session.points
+                    displayed_screen_uv = None
+                    last_valid_screen_ts_ms = None
+                    tracking_valid = False
+                    ensure_fullscreen_window(CALIBRATION_WINDOW_NAME)
+                    calibration_window_open = True
+                    status_message = f"开始校准({args.feature_mode}): {calibration_session.calibration_step}"
+                    print(status_message)
+            elif key == ord("x"):
+                if calibration_session is not None and calibration_session.is_active:
+                    calibration_session = cancel_calibration_session(calibration_session, "已取消当前校准。")
+                    calibration_window_open = False
+                    destroy_window(CALIBRATION_WINDOW_NAME)
+                    displayed_screen_uv = None
+                    last_valid_screen_ts_ms = None
+                    tracking_valid = False
+                    status_message = calibration_session.failure_reason or "已取消当前校准。"
+                    print(status_message)
+    finally:
+        cap.release()
+        destroy_window(CALIBRATION_WINDOW_NAME)
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
