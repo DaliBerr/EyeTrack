@@ -21,6 +21,7 @@ from eyetrack.metrics.segmentation import average_dict_values, compute_dice_per_
 from eyetrack.models.unet import UNet
 from eyetrack.runtime import autocast_context, resolve_device
 from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata
+from eyetrack.training.qat_engine import prepare_model_for_qat, strip_prepared_qat_model_to_float
 
 
 def compare_onnx_with_pytorch(
@@ -79,14 +80,34 @@ def compare_onnx_with_pytorch(
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     torch_device = resolve_device(device)
+    checkpoint_quantization_mode = str(resolved_model_metadata["quantization_mode"])
+    checkpoint_qat_backend = str(resolved_model_metadata["qat_backend"])
+    checkpoint_is_qat = checkpoint_quantization_mode.startswith("qat")
+    effective_qat_backend = checkpoint_qat_backend if checkpoint_qat_backend in {"qnnpack", "fbgemm"} else "qnnpack"
     model = UNet(
         in_channels=int(resolved_model_metadata["in_channels"]),
         num_classes=int(resolved_model_metadata["num_classes"]),
         base_channels=int(resolved_model_metadata["base_channels"]),
     ).to(torch_device)
-    load_info = load_checkpoint_flexible(model=model, checkpoint_path=checkpoint_path, device=torch_device, optimizer=None)
+    if checkpoint_is_qat:
+        model = prepare_model_for_qat(model=model, backend=effective_qat_backend)
+
+    load_info = load_checkpoint_flexible(
+        model=model,
+        checkpoint_path=checkpoint_path,
+        device=torch_device,
+        optimizer=None,
+        allow_partial_state_dict=checkpoint_is_qat,
+    )
     print("PyTorch model metadata:", resolved_model_metadata)
     print("PyTorch checkpoint 信息:", load_info)
+    if checkpoint_is_qat:
+        model.apply(torch.ao.quantization.disable_observer)
+        freeze_bn_fn = getattr(torch.ao.quantization, "freeze_bn_stats", None)
+        if freeze_bn_fn is not None:
+            model.apply(freeze_bn_fn)
+        model = strip_prepared_qat_model_to_float(model).to(torch_device)
+        print("PyTorch 对比模型已从 QAT checkpoint 恢复为融合后的浮点模型。")
     model.eval()
 
     session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])

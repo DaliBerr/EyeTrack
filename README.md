@@ -71,6 +71,24 @@ python Train.py \
   --amp
 ```
 
+从已训练 FP32 checkpoint 继续做 QAT 微调（示例：b6@256x160）：
+
+```bash
+python Train.py \
+  --root_dir path/to/openeds_256x160 \
+  --resume_checkpoint_path ./checkpoints/best_unet_b6_256x160_amp.pth \
+  --save_checkpoint_path ./checkpoints/best_unet_b6_256x160_qat.pth \
+  --base_channels 6 \
+  --input_width 256 \
+  --input_height 160 \
+  --no-use_mask \
+  --qat_mode fine_tune \
+  --qat_backend qnnpack \
+  --qat_learning_rate 1e-4 \
+  --qat_disable_observer_last_n_epochs 1 \
+  --qat_freeze_bn_after_epoch 2
+```
+
 离线缩放数据集：
 
 ```bash
@@ -98,6 +116,16 @@ python predict_segmentation_to_npy.py \
 python export_unet_to_onnx.py \
   --checkpoint_path ./checkpoints/best_unet_b8_384x240_amp.pth \
   --onnx_path ./checkpoints/unet_b8_384x240_fp32.onnx
+```
+
+导出 QAT 图（QDQ 风格，适配 QAT checkpoint）：
+
+```bash
+python export_unet_to_onnx.py \
+  --checkpoint_path ./checkpoints/best_unet_b6_256x160_qat.pth \
+  --onnx_path ./checkpoints/unet_b6_256x160_qat_qdq.onnx \
+  --quantization_mode qat_qdq_export \
+  --qat_backend qnnpack
 ```
 
 执行 PTQ：
@@ -198,6 +226,7 @@ python quantize_onnx_model.py \
 
 - `Train.py` 和部分可视化脚本里包含本地默认路径，运行前需要按你的环境修改。
 - 对于新版完整 checkpoint，PyTorch 侧训练续训、预测、可视化、评估、导出和实时脚本会优先读取 checkpoint metadata 自动恢复 `base_channels`、输入尺寸和 AMP 配置。
+- QAT 续训模式可通过 `--qat_mode fine_tune` 启用，支持从已训练 FP32 checkpoint 继续训练；QAT 模式下会自动禁用 AMP。
 - 移动端当前推荐预设为 `b8@384x240`，建议使用 `best_unet_b8_384x240_amp.pth`、`unet_b8_384x240_fp32.onnx`、`unet_b8_384x240_int8_qdq.onnx` 这组产物命名。
 - 量化默认会在 histogram 校准 OOM 时自动回退到 `MinMax + 较小 calibration_limit`，若不需要该行为可显式传 `--no-auto_fallback_to_minmax_on_oom`。
 - 当前轻量模型默认配置为 `base_channels=16`、输入尺寸 `384x240`、预处理模式 `raw grayscale + resize + normalize`。

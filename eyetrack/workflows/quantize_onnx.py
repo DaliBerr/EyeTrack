@@ -30,7 +30,47 @@ def is_histogram_calibration_method(calibration_method: str) -> bool:
 
 def is_probable_calibration_oom(exc: BaseException) -> bool:
     message = str(exc).lower()
-    return "bad allocation" in message or "out of memory" in message or "failed to allocate" in message
+    return (
+        "bad allocation" in message or
+        "out of memory" in message or
+        "failed to allocate" in message or
+        "unable to allocate" in message or
+        "arraymemoryerror" in message
+    )
+
+
+def resolve_effective_calibration_stride(reader: CalibrationImageReader, calibration_stride: int | None) -> int | None:
+    if calibration_stride is None or calibration_stride <= 0:
+        return None
+
+    total = len(reader)
+    if total == 0:
+        return None
+
+    stride = min(calibration_stride, total)
+    while stride > 1 and total % stride != 0:
+        stride -= 1
+    return max(stride, 1)
+
+
+def build_quantize_static_extra_options(
+    reader: CalibrationImageReader,
+    calibration_method: str,
+    calibration_stride: int | None,
+) -> dict[str, Any]:
+    """
+    summary: 构造 ORT 静态量化 extra_options
+    param reader: 校准 reader
+    param calibration_method: 校准方法
+    param calibration_stride: 分段校准 stride
+    return: extra_options 字典
+    """
+    effective_stride = resolve_effective_calibration_stride(reader=reader, calibration_stride=calibration_stride)
+    extra_options: dict[str, Any] = {}
+    if effective_stride is not None:
+        # ORT 1.24.x 会在 calibration 阶段按该 stride 多次调用 reader，可显著降低峰值内存。
+        extra_options["CalibStridedMinMax"] = effective_stride
+    return extra_options
 
 
 def build_calibration_reader(
@@ -61,6 +101,7 @@ def run_quantize_static(
     weight_type: str,
     calibration_method: str,
     per_channel: bool,
+    extra_options: dict[str, Any] | None = None,
 ) -> None:
     quantization.quantize_static(
         model_input=model_path,
@@ -71,6 +112,7 @@ def run_quantize_static(
         weight_type=parse_quant_enum(quantization.QuantType, weight_type),
         per_channel=per_channel,
         calibrate_method=parse_quant_enum(quantization.CalibrationMethod, calibration_method),
+        extra_options=extra_options,
     )
 
 
@@ -86,6 +128,7 @@ def quantize_onnx_model(
     weight_type: str = "qint8",
     calibration_method: str = "percentile",
     calibration_limit: int = 256,
+    calibration_stride: int = 1,
     per_channel: bool = True,
     auto_fallback_to_minmax_on_oom: bool = True,
     oom_fallback_calibration_limit: int = 32,
@@ -108,6 +151,7 @@ def quantize_onnx_model(
     param weight_type: 权重量化类型
     param calibration_method: 校准方法
     param calibration_limit: 校准样本上限
+    param calibration_stride: 分段校准 stride，1 表示逐样本校准以降低内存
     param per_channel: 是否启用 per-channel
     param auto_fallback_to_minmax_on_oom: 若 histogram 校准 OOM，是否自动回退到 MinMax
     param oom_fallback_calibration_limit: OOM 回退时使用的校准样本上限
@@ -135,10 +179,21 @@ def quantize_onnx_model(
         input_height=input_height,
         calibration_limit=calibration_limit,
     )
+    extra_options = build_quantize_static_extra_options(
+        reader=reader,
+        calibration_method=calibration_method,
+        calibration_stride=calibration_stride,
+    )
+    if extra_options.get("CalibStridedMinMax") is not None:
+        print(
+            "校准将采用分段执行以降低峰值内存: "
+            f"method={calibration_method} stride={extra_options['CalibStridedMinMax']} samples={len(reader)}"
+        )
 
     output_model_path = Path(output_path)
     output_model_path.parent.mkdir(parents=True, exist_ok=True)
     effective_calibration_method = calibration_method
+    effective_extra_options = extra_options
 
     try:
         run_quantize_static(
@@ -151,6 +206,7 @@ def quantize_onnx_model(
             weight_type=weight_type,
             calibration_method=calibration_method,
             per_channel=per_channel,
+            extra_options=extra_options,
         )
     except Exception as exc:
         if (
@@ -171,6 +227,11 @@ def quantize_onnx_model(
                 input_height=input_height,
                 calibration_limit=fallback_limit,
             )
+            fallback_extra_options = build_quantize_static_extra_options(
+                reader=reader,
+                calibration_method="minmax",
+                calibration_stride=calibration_stride,
+            )
             run_quantize_static(
                 quantization=quantization,
                 model_path=model_path,
@@ -181,15 +242,18 @@ def quantize_onnx_model(
                 weight_type=weight_type,
                 calibration_method="minmax",
                 per_channel=per_channel,
+                extra_options=fallback_extra_options,
             )
             effective_calibration_method = "minmax"
+            effective_extra_options = fallback_extra_options
             print("已完成 MinMax OOM fallback 量化。")
         else:
             if is_histogram_calibration_method(calibration_method) and is_probable_calibration_oom(exc):
                 raise RuntimeError(
                     "当前校准配置触发了 ONNX Runtime histogram 校准器的内存问题。"
-                    "建议先把 --calibration_limit 降到 16 或 32；"
-                    "若仍失败，改用 --calibration_method minmax；"
+                    "建议优先保留 --calibration_stride 1；"
+                    "若仍失败，再把 --calibration_limit 降到 16 或 32；"
+                    "或者直接改用 --calibration_method minmax；"
                     "或者直接加 --auto_fallback_to_minmax_on_oom。"
                 ) from exc
             raise
@@ -241,6 +305,7 @@ def quantize_onnx_model(
         weight_type=quantization.QuantType.QUInt8,
         per_channel=per_channel,
         calibrate_method=parse_quant_enum(quantization.CalibrationMethod, effective_calibration_method),
+        extra_options=effective_extra_options,
     )
     print(f"QInt8 结果超出阈值，已生成 U8U8 fallback 模型: {fallback_path}")
 
@@ -258,6 +323,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight_type", type=str, default="qint8", help="权重量化类型")
     parser.add_argument("--calibration_method", type=str, default="percentile", help="校准方法")
     parser.add_argument("--calibration_limit", type=int, default=256, help="用于校准的最大图像数")
+    parser.add_argument(
+        "--calibration_stride",
+        type=int,
+        default=1,
+        help="分段校准 stride；1 表示逐样本校准，最省内存；<=0 表示关闭分段",
+    )
     parser.add_argument("--per_channel", action="store_true", default=True, help="启用 per-channel 权重量化")
     parser.add_argument("--no-per_channel", action="store_false", dest="per_channel", help="禁用 per-channel 权重量化")
     parser.add_argument(
@@ -296,6 +367,7 @@ def main() -> None:
         weight_type=args.weight_type,
         calibration_method=args.calibration_method,
         calibration_limit=args.calibration_limit,
+        calibration_stride=args.calibration_stride,
         per_channel=args.per_channel,
         auto_fallback_to_minmax_on_oom=args.auto_fallback_to_minmax_on_oom,
         oom_fallback_calibration_limit=args.oom_fallback_calibration_limit,

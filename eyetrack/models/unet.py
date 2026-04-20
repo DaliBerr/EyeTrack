@@ -36,6 +36,19 @@ class DoubleConv(nn.Module):
         """
         return self.block(x)
 
+    def fuse_model(self, is_qat: bool = True) -> None:
+        """
+        summary: 融合 Conv-BN-ReLU 模块以准备量化训练或推理
+        param is_qat: 是否使用 QAT 融合规则
+        return: 无
+        """
+        fusion_spec = [["0", "1", "2"], ["3", "4", "5"]]
+        if is_qat and hasattr(torch.ao.quantization, "fuse_modules_qat"):
+            torch.ao.quantization.fuse_modules_qat(self.block, fusion_spec, inplace=True)
+            return
+
+        torch.ao.quantization.fuse_modules(self.block, fusion_spec, inplace=True)
+
 
 class Down(nn.Module):
     """
@@ -161,3 +174,19 @@ class UNet(nn.Module):
 
         logits = self.outc(x)
         return logits
+
+    def fuse_model(self, is_qat: bool = True) -> None:
+        """
+        summary: 对 U-Net 中可融合模块执行融合
+        param is_qat: 是否使用 QAT 融合规则
+        return: 无
+        """
+        self.inc.fuse_model(is_qat=is_qat)
+        self.down1.conv.fuse_model(is_qat=is_qat)
+        self.down2.conv.fuse_model(is_qat=is_qat)
+        self.down3.conv.fuse_model(is_qat=is_qat)
+        self.down4.conv.fuse_model(is_qat=is_qat)
+        self.up1.conv.fuse_model(is_qat=is_qat)
+        self.up2.conv.fuse_model(is_qat=is_qat)
+        self.up3.conv.fuse_model(is_qat=is_qat)
+        self.up4.conv.fuse_model(is_qat=is_qat)

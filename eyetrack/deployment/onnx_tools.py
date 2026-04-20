@@ -167,7 +167,9 @@ class CalibrationImageReader:
         self.input_height = input_height
         self.limit = limit
         self.image_paths = self._collect_image_paths()
-        self.index = 0
+        self.range_start = 0
+        self.range_end = len(self.image_paths)
+        self.index = self.range_start
 
     def _collect_image_paths(self) -> List[Path]:
         if not self.image_dir.exists():
@@ -185,8 +187,28 @@ class CalibrationImageReader:
 
         return image_paths[: self.limit]
 
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def set_range(self, start_index: int = 0, end_index: int | None = None) -> None:
+        """
+        summary: 设置当前 reader 可迭代的样本区间，供 ORT 分段校准使用
+        param start_index: 起始索引，包含
+        param end_index: 结束索引，不包含；None 表示到末尾
+        return: 无
+        """
+        total = len(self.image_paths)
+        resolved_end = total if end_index is None else min(end_index, total)
+        if start_index < 0 or start_index > resolved_end:
+            raise ValueError(
+                f"无效的 calibration range: start_index={start_index}, end_index={resolved_end}, total={total}"
+            )
+        self.range_start = start_index
+        self.range_end = resolved_end
+        self.index = self.range_start
+
     def get_next(self) -> Optional[Dict[str, np.ndarray]]:
-        if self.index >= len(self.image_paths):
+        if self.index >= self.range_end:
             return None
 
         image_path = self.image_paths[self.index]
@@ -199,7 +221,7 @@ class CalibrationImageReader:
         return {self.input_name: image}
 
     def rewind(self) -> None:
-        self.index = 0
+        self.set_range(0, len(self.image_paths))
 
 
 def resolve_image_dir(root_dir: str, split: str) -> str:

@@ -17,6 +17,8 @@ from eyetrack.config import (
     DEFAULT_INPUT_WIDTH,
     DEFAULT_NUM_CLASSES,
     DEFAULT_PREPROCESS_MODE,
+    DEFAULT_QAT_BACKEND,
+    DEFAULT_QUANTIZATION_MODE,
     DEFAULT_USE_AMP,
     DEFAULT_USE_MASK,
     build_model_metadata,
@@ -25,6 +27,7 @@ from eyetrack.data.openeds import OpenEDSSegDataset
 from eyetrack.models.unet import UNet
 from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_model_metadata, save_full_checkpoint
 from eyetrack.training.engine import train_one_epoch, validate_one_epoch
+from eyetrack.training.qat_engine import prepare_model_for_qat, update_qat_epoch_state
 from eyetrack.runtime import resolve_device, should_enable_amp
 
 
@@ -89,6 +92,11 @@ def run_training(
     use_amp: bool = DEFAULT_USE_AMP,
     use_mask: bool = DEFAULT_USE_MASK,
     device: str = "auto",
+    qat_mode: str = "off",
+    qat_backend: str = DEFAULT_QAT_BACKEND,
+    qat_learning_rate: float | None = None,
+    qat_disable_observer_last_n_epochs: int = 1,
+    qat_freeze_bn_after_epoch: int = 2,
 ) -> None:
     """
     summary: 训练 OpenEDS 分割模型并支持 AMP 与轻量配置
@@ -107,11 +115,17 @@ def run_training(
     param use_amp: 是否启用 AMP
     param use_mask: 是否读取 mask 并计算 masked_acc
     param device: 运行设备
+    param qat_mode: QAT 模式，off 或 fine_tune
+    param qat_backend: QAT backend，qnnpack 或 fbgemm
+    param qat_learning_rate: QAT 阶段可选学习率覆盖
+    param qat_disable_observer_last_n_epochs: QAT 最后多少轮关闭 observer
+    param qat_freeze_bn_after_epoch: QAT 从第几轮开始冻结 BN 统计
     return: 无
     """
     set_seed(42)
 
     torch_device = resolve_device(device)
+    is_qat_mode = qat_mode == "fine_tune"
     resume_metadata_path = resume_checkpoint_path if resume_checkpoint_path and os.path.exists(resume_checkpoint_path) else None
     resolved_model_metadata = resolve_model_metadata(
         checkpoint_path=resume_metadata_path,
@@ -124,6 +138,8 @@ def run_training(
         preprocess_mode=DEFAULT_PREPROCESS_MODE,
         amp=use_amp,
         use_mask=use_mask,
+        quantization_mode=DEFAULT_QUANTIZATION_MODE,
+        qat_backend=qat_backend,
     )
 
     in_channels = int(resolved_model_metadata["in_channels"])
@@ -133,10 +149,28 @@ def run_training(
     input_height = int(resolved_model_metadata["input_height"])
     use_amp = bool(resolved_model_metadata["amp"])
     use_mask = bool(resolved_model_metadata["use_mask"])
+    checkpoint_quantization_mode = str(resolved_model_metadata["quantization_mode"])
+    checkpoint_qat_backend = str(resolved_model_metadata["qat_backend"])
+
+    if is_qat_mode and use_amp:
+        print("QAT 模式下将自动禁用 AMP 以保证量化统计稳定性。")
+        use_amp = False
+
+    selected_learning_rate = learning_rate
+    if is_qat_mode and qat_learning_rate is not None:
+        selected_learning_rate = qat_learning_rate
+
+    effective_qat_backend = qat_backend
+    if is_qat_mode and checkpoint_qat_backend in {"qnnpack", "fbgemm"}:
+        effective_qat_backend = checkpoint_qat_backend
 
     amp_enabled = should_enable_amp(device=torch_device, use_amp=use_amp)
     print("device:", torch_device)
     print("amp:", amp_enabled)
+    if is_qat_mode:
+        print("qat_mode:", qat_mode)
+        print("qat_backend:", effective_qat_backend)
+        print("qat_lr:", selected_learning_rate)
     print("model metadata:", resolved_model_metadata)
 
     train_dataset = OpenEDSSegDataset(
@@ -171,19 +205,15 @@ def run_training(
     )
 
     model = UNet(in_channels=in_channels, num_classes=num_classes, base_channels=base_channels).to(torch_device)
+    checkpoint_is_qat = checkpoint_quantization_mode.startswith("qat")
+    prepared_for_qat = False
+    if is_qat_mode and checkpoint_is_qat:
+        model = prepare_model_for_qat(model=model, backend=effective_qat_backend)
+        prepared_for_qat = True
+
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=selected_learning_rate)
     scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
-    metadata = build_model_metadata(
-        in_channels=in_channels,
-        num_classes=num_classes,
-        base_channels=base_channels,
-        input_width=input_width,
-        input_height=input_height,
-        preprocess_mode=str(resolved_model_metadata["preprocess_mode"]),
-        amp=use_amp,
-        use_mask=use_mask,
-    )
 
     start_epoch = 1
     best_val_loss = float("inf")
@@ -193,13 +223,58 @@ def run_training(
             model=model,
             checkpoint_path=resume_checkpoint_path,
             device=torch_device,
-            optimizer=optimizer,
+            optimizer=None if is_qat_mode else optimizer,
+            allow_partial_state_dict=is_qat_mode or checkpoint_is_qat,
         )
 
         start_epoch = load_info["start_epoch"]
         best_val_loss = load_info["best_val_loss"]
 
-    for epoch in range(start_epoch, num_epochs + 1):
+    if is_qat_mode and not prepared_for_qat:
+        model = prepare_model_for_qat(model=model, backend=effective_qat_backend)
+        prepared_for_qat = True
+
+    if is_qat_mode:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=selected_learning_rate)
+        scaler = torch.cuda.amp.GradScaler(enabled=False)
+        if resume_checkpoint_path and os.path.exists(resume_checkpoint_path):
+            print("QAT 模式下将忽略历史 optimizer 状态，并以当前学习率重新初始化优化器。")
+
+    metadata = build_model_metadata(
+        in_channels=in_channels,
+        num_classes=num_classes,
+        base_channels=base_channels,
+        input_width=input_width,
+        input_height=input_height,
+        preprocess_mode=str(resolved_model_metadata["preprocess_mode"]),
+        amp=use_amp,
+        use_mask=use_mask,
+        quantization_mode="qat_fine_tune" if is_qat_mode else "fp32",
+        qat_backend=effective_qat_backend,
+    )
+
+    train_start_epoch = start_epoch
+    train_end_epoch = num_epochs
+    if is_qat_mode:
+        train_end_epoch = start_epoch + num_epochs - 1
+
+    for epoch in range(train_start_epoch, train_end_epoch + 1):
+        if is_qat_mode:
+            qat_stage_epoch = epoch - train_start_epoch + 1
+            qat_state = update_qat_epoch_state(
+                model=model,
+                stage_epoch=qat_stage_epoch,
+                total_stage_epochs=num_epochs,
+                disable_observer_last_n_epochs=qat_disable_observer_last_n_epochs,
+                freeze_bn_after_epoch=qat_freeze_bn_after_epoch,
+            )
+            print(
+                "QAT state | "
+                f"stage_epoch={qat_state['stage_epoch']}/{qat_state['total_stage_epochs']} "
+                f"observer_enabled={qat_state['observer_enabled']} "
+                f"bn_frozen={qat_state['bn_frozen']}"
+            )
+
         train_metrics = train_one_epoch(
             model=model,
             dataloader=train_loader,
@@ -264,6 +339,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-amp", action="store_false", dest="amp", help="禁用 CUDA AMP")
     parser.add_argument("--use_mask", action="store_true", default=DEFAULT_USE_MASK, help="读取 mask 并计算 masked_acc")
     parser.add_argument("--no-use_mask", action="store_false", dest="use_mask", help="不读取 mask，加快数据加载")
+    parser.add_argument("--qat_mode", type=str, default="off", choices=["off", "fine_tune"], help="QAT 模式，off 或 fine_tune")
+    parser.add_argument(
+        "--qat_backend",
+        type=str,
+        default=DEFAULT_QAT_BACKEND,
+        choices=["qnnpack", "fbgemm"],
+        help="QAT backend，建议部署到 ARM 时使用 qnnpack",
+    )
+    parser.add_argument("--qat_learning_rate", type=float, default=None, help="QAT 模式下可选学习率覆盖")
+    parser.add_argument(
+        "--qat_disable_observer_last_n_epochs",
+        type=int,
+        default=1,
+        help="QAT 最后多少轮关闭 observer",
+    )
+    parser.add_argument(
+        "--qat_freeze_bn_after_epoch",
+        type=int,
+        default=2,
+        help="QAT 从第几轮开始冻结 BN 统计，<=0 表示不冻结",
+    )
 
     return parser.parse_args()
 
@@ -292,4 +388,9 @@ def main() -> None:
         use_amp=args.amp,
         use_mask=args.use_mask,
         device=args.device,
+        qat_mode=args.qat_mode,
+        qat_backend=args.qat_backend,
+        qat_learning_rate=args.qat_learning_rate,
+        qat_disable_observer_last_n_epochs=args.qat_disable_observer_last_n_epochs,
+        qat_freeze_bn_after_epoch=args.qat_freeze_bn_after_epoch,
     )

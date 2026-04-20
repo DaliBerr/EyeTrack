@@ -11,10 +11,43 @@ from eyetrack.config import (
     DEFAULT_INPUT_WIDTH,
     DEFAULT_NUM_CLASSES,
     DEFAULT_PREPROCESS_MODE,
+    DEFAULT_QAT_BACKEND,
+    DEFAULT_QUANTIZATION_MODE,
     DEFAULT_USE_AMP,
     DEFAULT_USE_MASK,
     build_model_metadata,
 )
+
+
+def _load_state_dict_flexible(
+    model: nn.Module,
+    state_dict: Dict[str, Any],
+    allow_partial_state_dict: bool,
+) -> Dict[str, Any]:
+    """
+    summary: 加载 state_dict，必要时允许 strict=False 兼容加载
+    param model: 目标模型
+    param state_dict: 待加载参数
+    param allow_partial_state_dict: 是否允许 partial load
+    return: 加载结果信息
+    """
+    try:
+        model.load_state_dict(state_dict)
+        return {
+            "partial_load": False,
+            "missing_keys": [],
+            "unexpected_keys": [],
+        }
+    except RuntimeError:
+        if not allow_partial_state_dict:
+            raise
+
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    return {
+        "partial_load": True,
+        "missing_keys": list(incompatible.missing_keys),
+        "unexpected_keys": list(incompatible.unexpected_keys),
+    }
 
 
 def save_full_checkpoint(
@@ -53,7 +86,8 @@ def load_checkpoint_flexible(
     device: torch.device,
     optimizer: Optional[torch.optim.Optimizer] = None,
     fallback_start_epoch: int = 1,
-    fallback_best_val_loss: float = float("inf")
+    fallback_best_val_loss: float = float("inf"),
+    allow_partial_state_dict: bool = True,
 ) -> Dict[str, Any]:
     """
     summary: 兼容读取旧版权重文件与新版完整 checkpoint
@@ -63,12 +97,17 @@ def load_checkpoint_flexible(
     param optimizer: 可选优化器，用于恢复优化器状态
     param fallback_start_epoch: 旧版权重文件的默认起始 epoch
     param fallback_best_val_loss: 旧版权重文件的默认最佳验证损失
+    param allow_partial_state_dict: 是否允许 strict=False 兼容加载
     return: 包含加载信息的字典
     """
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
+        load_state_info = _load_state_dict_flexible(
+            model=model,
+            state_dict=checkpoint["model_state_dict"],
+            allow_partial_state_dict=allow_partial_state_dict,
+        )
 
         optimizer_loaded = False
         if optimizer is not None and "optimizer_state_dict" in checkpoint:
@@ -81,6 +120,12 @@ def load_checkpoint_flexible(
         print(f"已加载新版完整 checkpoint: {checkpoint_path}")
         print(f"下次训练将从 epoch {start_epoch} 开始")
         print(f"optimizer 状态已恢复: {optimizer_loaded}")
+        if load_state_info["partial_load"]:
+            print(
+                "模型参数按 strict=False 兼容加载，"
+                f"missing_keys={len(load_state_info['missing_keys'])}, "
+                f"unexpected_keys={len(load_state_info['unexpected_keys'])}"
+            )
 
         return {
             "start_epoch": start_epoch,
@@ -88,14 +133,27 @@ def load_checkpoint_flexible(
             "is_full_checkpoint": True,
             "optimizer_loaded": optimizer_loaded,
             "metadata": checkpoint.get("metadata", {}),
+            "partial_load": load_state_info["partial_load"],
+            "missing_keys": load_state_info["missing_keys"],
+            "unexpected_keys": load_state_info["unexpected_keys"],
         }
 
     if isinstance(checkpoint, dict):
-        model.load_state_dict(checkpoint)
+        load_state_info = _load_state_dict_flexible(
+            model=model,
+            state_dict=checkpoint,
+            allow_partial_state_dict=allow_partial_state_dict,
+        )
 
         print(f"已加载旧版权重文件: {checkpoint_path}")
         print("该文件仅包含模型权重，optimizer 状态无法恢复。")
         print(f"将从 epoch {fallback_start_epoch} 开始继续训练。")
+        if load_state_info["partial_load"]:
+            print(
+                "模型参数按 strict=False 兼容加载，"
+                f"missing_keys={len(load_state_info['missing_keys'])}, "
+                f"unexpected_keys={len(load_state_info['unexpected_keys'])}"
+            )
 
         return {
             "start_epoch": fallback_start_epoch,
@@ -103,6 +161,9 @@ def load_checkpoint_flexible(
             "is_full_checkpoint": False,
             "optimizer_loaded": False,
             "metadata": {},
+            "partial_load": load_state_info["partial_load"],
+            "missing_keys": load_state_info["missing_keys"],
+            "unexpected_keys": load_state_info["unexpected_keys"],
         }
 
     raise ValueError(f"无法识别的 checkpoint 格式: {checkpoint_path}")
@@ -145,6 +206,8 @@ def resolve_model_metadata(
     preprocess_mode: str = DEFAULT_PREPROCESS_MODE,
     amp: bool = DEFAULT_USE_AMP,
     use_mask: bool = DEFAULT_USE_MASK,
+    quantization_mode: str = DEFAULT_QUANTIZATION_MODE,
+    qat_backend: str = DEFAULT_QAT_BACKEND,
 ) -> Dict[str, Any]:
     """
     summary: 基于 fallback 配置和 checkpoint 元数据解析最终模型配置
@@ -158,6 +221,8 @@ def resolve_model_metadata(
     param preprocess_mode: fallback 预处理模式
     param amp: fallback AMP 开关
     param use_mask: fallback mask 开关
+    param quantization_mode: fallback 量化模式
+    param qat_backend: fallback QAT backend
     return: 解析后的模型配置元数据
     """
     resolved = build_model_metadata(
@@ -169,6 +234,8 @@ def resolve_model_metadata(
         preprocess_mode=preprocess_mode,
         amp=amp,
         use_mask=use_mask,
+        quantization_mode=quantization_mode,
+        qat_backend=qat_backend,
     )
 
     if checkpoint_path is None:
@@ -186,4 +253,6 @@ def resolve_model_metadata(
     resolved["preprocess_mode"] = str(checkpoint_metadata.get("preprocess_mode", resolved["preprocess_mode"]))
     resolved["amp"] = bool(checkpoint_metadata.get("amp", resolved["amp"]))
     resolved["use_mask"] = bool(checkpoint_metadata.get("use_mask", resolved["use_mask"]))
+    resolved["quantization_mode"] = str(checkpoint_metadata.get("quantization_mode", resolved["quantization_mode"]))
+    resolved["qat_backend"] = str(checkpoint_metadata.get("qat_backend", resolved["qat_backend"]))
     return resolved

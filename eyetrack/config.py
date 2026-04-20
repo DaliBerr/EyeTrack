@@ -9,6 +9,8 @@ DEFAULT_INPUT_HEIGHT = 240
 DEFAULT_PREPROCESS_MODE = "raw_resize"
 DEFAULT_USE_AMP = True
 DEFAULT_USE_MASK = True
+DEFAULT_QUANTIZATION_MODE = "fp32"
+DEFAULT_QAT_BACKEND = "qnnpack"
 
 DEFAULT_CHECKPOINT_PATH = "./checkpoints/best_unet_b16_384x240_amp.pth"
 DEFAULT_ONNX_PATH = "./checkpoints/unet_b16_384x240_fp32.onnx"
@@ -28,6 +30,8 @@ def build_model_metadata(
     preprocess_mode: str = DEFAULT_PREPROCESS_MODE,
     amp: bool = DEFAULT_USE_AMP,
     use_mask: bool = DEFAULT_USE_MASK,
+    quantization_mode: str = DEFAULT_QUANTIZATION_MODE,
+    qat_backend: str = DEFAULT_QAT_BACKEND,
 ) -> Dict[str, Any]:
     """
     summary: 构建模型配置元数据，便于 checkpoint 与导出流程复用
@@ -39,6 +43,8 @@ def build_model_metadata(
     param preprocess_mode: 预处理模式
     param amp: 是否使用 AMP 作为训练基线
     param use_mask: 训练时是否读取 mask
+    param quantization_mode: 量化模式标记，默认 fp32
+    param qat_backend: QAT backend，默认 qnnpack
     return: 元数据字典
     """
     return {
@@ -50,4 +56,6 @@ def build_model_metadata(
         "preprocess_mode": preprocess_mode,
         "amp": amp,
         "use_mask": use_mask,
+        "quantization_mode": quantization_mode,
+        "qat_backend": qat_backend,
     }
