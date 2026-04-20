@@ -27,7 +27,7 @@ from eyetrack.gaze import (
     advance_calibration_session,
     begin_calibration_session,
     build_empty_gaze_feature_result,
-    build_five_point_calibration_points,
+    build_nine_point_calibration_points,
     cancel_calibration_session,
     extract_gaze_features_from_label_map,
     predict_screen_point,
@@ -49,7 +49,7 @@ from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_mode
 # 配置区
 # =========================
 CHECKPOINT_PATH = DEFAULT_CHECKPOINT_PATH
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 WINDOW_NAME = "Realtime Eye Direction Demo"
 CALIBRATION_WINDOW_NAME = "Realtime Gaze Calibration"
 
@@ -68,12 +68,20 @@ USE_AMP = DEFAULT_USE_AMP
 
 IRIS_CLASS_ID = 2
 PUPIL_CLASS_ID = 3
+OUTER_BOUNDARY_CLASS_ID = 1
 KERNEL_SIZE = 3
 IRIS_MIN_AREA = 100
 PUPIL_MIN_AREA = 20
 
-EMA_ALPHA = 0.35
 MAX_VALID_NORM_RADIUS = 0.85
+QUALITY_TRACKER_ALPHA = 0.18
+MIN_TRACKING_CONFIDENCE = 0.22
+MIN_CALIBRATION_CONFIDENCE = 0.30
+KALMAN_PROCESS_NOISE = 0.002
+KALMAN_BASE_MEASUREMENT_NOISE = 0.008
+KALMAN_LOW_CONFIDENCE_NOISE = 0.06
+KALMAN_JUMP_NOISE_SCALE = 0.10
+KALMAN_MAX_COVARIANCE = 1.5
 ARROW_LENGTH = 120
 SHOW_DEBUG_TEXT = True
 USE_MIRROR_VIEW = False
@@ -176,28 +184,150 @@ class ROIInteractionState:
         return ROIBox(x1=x1, y1=y1, x2=x2, y2=y2).clip(self.frame_width, self.frame_height)
 
 
-class OnlineEMAFilter:
-    def __init__(self, alpha: float):
-        self.alpha = alpha
-        self.dx: Optional[float] = None
-        self.dy: Optional[float] = None
+class FeatureQualityTracker:
+    def __init__(self, alpha: float = QUALITY_TRACKER_ALPHA):
+        self.alpha = float(np.clip(alpha, 0.01, 0.99))
+        self.area_ema: Optional[float] = None
+        self.feature_x_ema: Optional[float] = None
+        self.feature_y_ema: Optional[float] = None
 
     def reset(self) -> None:
-        self.dx = None
-        self.dy = None
+        self.area_ema = None
+        self.feature_x_ema = None
+        self.feature_y_ema = None
 
-    def update(self, dx: Optional[float], dy: Optional[float], valid: bool) -> Tuple[Optional[float], Optional[float]]:
-        if not valid or dx is None or dy is None:
-            return self.dx, self.dy
+    def compute_confidence(
+        self,
+        geometry_result: GazeFeatureResult,
+        feature_mode: str,
+        feature_x: Optional[float],
+        feature_y: Optional[float],
+        feature_valid: bool,
+        feature_reasons: tuple[str, ...],
+    ) -> float:
+        if not feature_valid or feature_x is None or feature_y is None:
+            return 0.0
 
-        if self.dx is None or self.dy is None:
-            self.dx = dx
-            self.dy = dy
+        iris_area = float(max(geometry_result.iris_geometry.area, 0))
+        area_reference = max(float(IRIS_MIN_AREA) * 2.0, 1.0)
+        area_term = float(np.clip(iris_area / area_reference, 0.0, 1.0))
+
+        if self.area_ema is None:
+            area_stability = 1.0
         else:
-            self.dx = self.alpha * dx + (1.0 - self.alpha) * self.dx
-            self.dy = self.alpha * dy + (1.0 - self.alpha) * self.dy
+            area_delta = abs(iris_area - self.area_ema) / max(self.area_ema, 1.0)
+            area_stability = float(np.exp(-2.5 * area_delta))
 
-        return self.dx, self.dy
+        if self.feature_x_ema is None or self.feature_y_ema is None:
+            motion_stability = 1.0
+        else:
+            motion_delta = float(np.hypot(feature_x - self.feature_x_ema, feature_y - self.feature_y_ema))
+            motion_stability = float(np.exp(-6.0 * motion_delta))
+
+        shape_term = 0.35
+        if geometry_result.iris_geometry.ellipse is not None:
+            major = max(float(geometry_result.iris_geometry.ellipse.major_axis), 1e-6)
+            minor = float(geometry_result.iris_geometry.ellipse.minor_axis)
+            axis_ratio = minor / major
+            shape_term = float(np.clip((axis_ratio - 0.12) / 0.55, 0.0, 1.0))
+
+        normalized_mode = feature_mode.strip().lower()
+        mode_factor = 1.0
+        if normalized_mode == "iris_only" and not geometry_result.iris_outer_valid:
+            mode_factor = 0.65
+
+        reason_penalty = 1.0 / (1.0 + 0.3 * len(feature_reasons))
+        confidence = (0.20 + 0.25 * area_term + 0.25 * area_stability + 0.20 * motion_stability + 0.10 * shape_term)
+        confidence = float(np.clip(confidence * mode_factor * reason_penalty, 0.0, 1.0))
+
+        if self.area_ema is None:
+            self.area_ema = iris_area
+        else:
+            self.area_ema = self.alpha * iris_area + (1.0 - self.alpha) * self.area_ema
+
+        if self.feature_x_ema is None or self.feature_y_ema is None:
+            self.feature_x_ema = float(feature_x)
+            self.feature_y_ema = float(feature_y)
+        else:
+            self.feature_x_ema = self.alpha * float(feature_x) + (1.0 - self.alpha) * self.feature_x_ema
+            self.feature_y_ema = self.alpha * float(feature_y) + (1.0 - self.alpha) * self.feature_y_ema
+
+        return confidence
+
+
+class AdaptiveKalmanFilter2D:
+    def __init__(
+        self,
+        process_noise: float = KALMAN_PROCESS_NOISE,
+        base_measurement_noise: float = KALMAN_BASE_MEASUREMENT_NOISE,
+        low_confidence_noise: float = KALMAN_LOW_CONFIDENCE_NOISE,
+        jump_noise_scale: float = KALMAN_JUMP_NOISE_SCALE,
+        max_covariance: float = KALMAN_MAX_COVARIANCE,
+    ):
+        self.process_noise = float(max(process_noise, 1e-7))
+        self.base_measurement_noise = float(max(base_measurement_noise, 1e-7))
+        self.low_confidence_noise = float(max(low_confidence_noise, 0.0))
+        self.jump_noise_scale = float(max(jump_noise_scale, 0.0))
+        self.max_covariance = float(max(max_covariance, 1e-5))
+
+        self.state_x: Optional[float] = None
+        self.state_y: Optional[float] = None
+        self.var_x: float = self.max_covariance
+        self.var_y: float = self.max_covariance
+        self.last_measurement: Optional[Tuple[float, float]] = None
+
+    def reset(self) -> None:
+        self.state_x = None
+        self.state_y = None
+        self.var_x = self.max_covariance
+        self.var_y = self.max_covariance
+        self.last_measurement = None
+
+    def _predict(self) -> None:
+        if self.state_x is None or self.state_y is None:
+            return
+        self.var_x = min(self.var_x + self.process_noise, self.max_covariance)
+        self.var_y = min(self.var_y + self.process_noise, self.max_covariance)
+
+    @staticmethod
+    def _update_axis(state: float, variance: float, measurement: float, measurement_noise: float) -> Tuple[float, float]:
+        gain = variance / (variance + measurement_noise)
+        next_state = state + gain * (measurement - state)
+        next_variance = (1.0 - gain) * variance
+        return float(next_state), float(next_variance)
+
+    def update(self, dx: Optional[float], dy: Optional[float], valid: bool, confidence: float) -> Tuple[Optional[float], Optional[float]]:
+        self._predict()
+
+        if not valid or dx is None or dy is None:
+            return self.state_x, self.state_y
+
+        measurement_x = float(dx)
+        measurement_y = float(dy)
+
+        if self.state_x is None or self.state_y is None:
+            self.state_x = measurement_x
+            self.state_y = measurement_y
+            self.var_x = self.base_measurement_noise
+            self.var_y = self.base_measurement_noise
+            self.last_measurement = (measurement_x, measurement_y)
+            return self.state_x, self.state_y
+
+        confidence = float(np.clip(confidence, 0.0, 1.0))
+        jump = 0.0
+        if self.last_measurement is not None:
+            jump = float(np.hypot(measurement_x - self.last_measurement[0], measurement_y - self.last_measurement[1]))
+
+        measurement_noise = self.base_measurement_noise
+        measurement_noise += (1.0 - confidence) * self.low_confidence_noise
+        measurement_noise += jump * self.jump_noise_scale
+        measurement_noise = float(np.clip(measurement_noise, 1e-6, 5.0))
+
+        self.state_x, self.var_x = self._update_axis(self.state_x, self.var_x, measurement_x, measurement_noise)
+        self.state_y, self.var_y = self._update_axis(self.state_y, self.var_y, measurement_y, measurement_noise)
+        self.last_measurement = (measurement_x, measurement_y)
+
+        return self.state_x, self.state_y
 
 
 ROI_STATE = ROIInteractionState()
@@ -348,6 +478,7 @@ def extract_eye_geometry_from_label_map(pred_label_map: np.ndarray) -> GazeFeatu
     return extract_gaze_features_from_label_map(
         pred_label_map=pred_label_map,
         valid_mask=None,
+        outer_boundary_class_id=OUTER_BOUNDARY_CLASS_ID,
         iris_class_id=IRIS_CLASS_ID,
         pupil_class_id=PUPIL_CLASS_ID,
         kernel_size=KERNEL_SIZE,
@@ -479,6 +610,7 @@ def put_debug_text(
     selected_feature_x: Optional[float],
     selected_feature_y: Optional[float],
     selected_feature_valid: bool,
+    selected_feature_confidence: float,
     selected_feature_reasons: tuple[str, ...],
     preprocess_meta: Optional[ResizeMeta],
     smoothed_dx: Optional[float],
@@ -487,6 +619,7 @@ def put_debug_text(
     camera_resolution: Tuple[int, int],
     selected_roi: Optional[ROIBox],
     calibration_session: Optional[CalibrationSession],
+    static_boundary_ellipse: Optional[EllipseResult],
     screen_uv: Optional[Tuple[float, float]],
     tracking_valid: bool,
     status_message: str,
@@ -527,13 +660,16 @@ def put_debug_text(
         f"feature_x: {selected_feature_x}",
         f"feature_y: {selected_feature_y}",
         f"feature_valid: {selected_feature_valid}",
+        f"feature_conf: {selected_feature_confidence:.3f}",
         f"feature_invalid: {feature_reason_text}",
+        f"conf_gate: track>={MIN_TRACKING_CONFIDENCE:.2f} cal>={MIN_CALIBRATION_CONFIDENCE:.2f}",
         f"sm_dx  : {smoothed_dx}",
         f"sm_dy  : {smoothed_dy}",
         f"invalid: {invalid_reason_text}",
         f"calibration_state: {calibration_state}",
         f"calibration_step : {calibration_step}",
         f"calibrated: {calibrated}",
+        f"static_boundary: {static_boundary_ellipse is not None}",
         f"screen_uv: {format_optional_pair(screen_uv)}",
         f"tracking_valid: {tracking_valid}",
         f"message: {status_message}",
@@ -579,6 +715,7 @@ def build_visualization(
     selected_feature_x: Optional[float],
     selected_feature_y: Optional[float],
     selected_feature_valid: bool,
+    selected_feature_confidence: float,
     selected_feature_reasons: tuple[str, ...],
     preprocess_meta: Optional[ResizeMeta],
     selected_roi: Optional[ROIBox],
@@ -587,6 +724,7 @@ def build_visualization(
     fps: float,
     camera_resolution: Tuple[int, int],
     calibration_session: Optional[CalibrationSession],
+    static_boundary_ellipse: Optional[EllipseResult],
     calibration_points: list,
     screen_uv: Optional[Tuple[float, float]],
     tracking_valid: bool,
@@ -596,6 +734,7 @@ def build_visualization(
 
     vis = draw_ellipse_on_frame(vis, geometry_result.iris_geometry.ellipse, preprocess_meta, selected_roi, (0, 255, 0), 2)
     vis = draw_ellipse_on_frame(vis, geometry_result.pupil_geometry.ellipse, preprocess_meta, selected_roi, (0, 0, 255), 2)
+    vis = draw_ellipse_on_frame(vis, static_boundary_ellipse, preprocess_meta, selected_roi, (255, 128, 0), 1)
 
     vis = draw_center_on_frame(vis, geometry_result.iris_geometry.center_x, geometry_result.iris_geometry.center_y, preprocess_meta, selected_roi, (0, 255, 0), 4)
     vis = draw_center_on_frame(vis, geometry_result.pupil_geometry.center_x, geometry_result.pupil_geometry.center_y, preprocess_meta, selected_roi, (0, 0, 255), 4)
@@ -629,6 +768,7 @@ def build_visualization(
             selected_feature_x,
             selected_feature_y,
             selected_feature_valid,
+            selected_feature_confidence,
             selected_feature_reasons,
             preprocess_meta,
             smoothed_dx,
@@ -637,6 +777,7 @@ def build_visualization(
             camera_resolution,
             selected_roi,
             calibration_session,
+            static_boundary_ellipse,
             screen_uv,
             tracking_valid,
             status_message,
@@ -778,14 +919,15 @@ def main() -> None:
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(WINDOW_NAME, handle_mouse)
 
-    ema_filter = OnlineEMAFilter(alpha=EMA_ALPHA)
+    quality_tracker = FeatureQualityTracker(alpha=QUALITY_TRACKER_ALPHA)
+    kalman_filter = AdaptiveKalmanFilter2D()
     calibration_session: Optional[CalibrationSession] = None
     calibration_window_open = False
-    calibration_points = build_five_point_calibration_points(args.calibration_margin)
+    calibration_points = build_nine_point_calibration_points(args.calibration_margin)
     displayed_screen_uv: Optional[Tuple[float, float]] = None
     last_valid_screen_ts_ms: Optional[float] = None
     tracking_valid = False
-    status_message = "请选择 ROI，然后按 s 开始五点校准。"
+    status_message = "请选择 ROI，然后按 s 开始九点校准。"
     last_roi_revision = ROI_STATE.roi_revision
     prev_time = time.time()
 
@@ -803,7 +945,8 @@ def main() -> None:
 
             if ROI_STATE.roi_revision != last_roi_revision:
                 last_roi_revision = ROI_STATE.roi_revision
-                ema_filter.reset()
+                quality_tracker.reset()
+                kalman_filter.reset()
                 calibration_session = None
                 calibration_window_open = False
                 destroy_window(CALIBRATION_WINDOW_NAME)
@@ -817,6 +960,7 @@ def main() -> None:
             selected_feature_x: Optional[float] = None
             selected_feature_y: Optional[float] = None
             selected_feature_valid = False
+            selected_feature_confidence = 0.0
             selected_feature_reasons: tuple[str, ...] = tuple()
             preprocess_meta: Optional[ResizeMeta] = None
             roi_gray_preview: Optional[np.ndarray] = None
@@ -833,15 +977,36 @@ def main() -> None:
                     pred_label_map = predict_label_map(predictor, input_tensor, device, use_amp=amp_enabled)
                     geometry_result = extract_eye_geometry_from_label_map(pred_label_map)
 
+            calibration_model_for_feature = calibration_session.model if calibration_session is not None and calibration_session.is_calibrated else None
+            static_boundary_ellipse = calibration_model_for_feature.static_boundary_ellipse if calibration_model_for_feature is not None else None
+
             selected_feature_x, selected_feature_y, selected_feature_valid, selected_feature_reasons = resolve_tracking_features(
                 geometry_result,
                 feature_mode=args.feature_mode,
+                reference_boundary_ellipse=static_boundary_ellipse,
             )
 
-            smoothed_dx, smoothed_dy = ema_filter.update(
+            selected_feature_confidence = quality_tracker.compute_confidence(
+                geometry_result=geometry_result,
+                feature_mode=args.feature_mode,
+                feature_x=selected_feature_x,
+                feature_y=selected_feature_y,
+                feature_valid=selected_feature_valid,
+                feature_reasons=selected_feature_reasons,
+            )
+
+            smoothed_dx, smoothed_dy = kalman_filter.update(
                 selected_feature_x,
                 selected_feature_y,
                 selected_feature_valid,
+                selected_feature_confidence,
+            )
+
+            calibration_feature_valid = bool(
+                selected_feature_valid
+                and selected_feature_confidence >= MIN_CALIBRATION_CONFIDENCE
+                and smoothed_dx is not None
+                and smoothed_dy is not None
             )
 
             now_ms = time.time() * 1000.0
@@ -853,7 +1018,9 @@ def main() -> None:
                     now_ms=now_ms,
                     feature_dx=smoothed_dx,
                     feature_dy=smoothed_dy,
-                    feature_valid=bool(selected_feature_valid and smoothed_dx is not None and smoothed_dy is not None),
+                    feature_valid=calibration_feature_valid,
+                    feature_confidence=selected_feature_confidence,
+                    boundary_ellipse=geometry_result.outer_boundary_geometry.ellipse,
                 )
 
                 if calibration_session.state != previous_state:
@@ -865,7 +1032,7 @@ def main() -> None:
                         calibration_points = calibration_session.points
                         calibration_window_open = False
                         destroy_window(CALIBRATION_WINDOW_NAME)
-                        status_message = "五点校准完成。"
+                        status_message = "九点校准完成。"
                         print(status_message)
                     elif calibration_session.state == "failed":
                         calibration_window_open = False
@@ -885,7 +1052,13 @@ def main() -> None:
 
             calibration_model = calibration_session.model if calibration_session is not None and calibration_session.is_calibrated else None
             tracking_valid = False
-            if calibration_model is not None and selected_feature_valid and smoothed_dx is not None and smoothed_dy is not None:
+            tracking_gate_valid = bool(
+                selected_feature_valid
+                and selected_feature_confidence >= MIN_TRACKING_CONFIDENCE
+                and smoothed_dx is not None
+                and smoothed_dy is not None
+            )
+            if calibration_model is not None and tracking_gate_valid:
                 predicted_screen_uv = predict_screen_point(calibration_model, smoothed_dx, smoothed_dy)
                 if predicted_screen_uv is not None:
                     displayed_screen_uv = predicted_screen_uv
@@ -913,6 +1086,7 @@ def main() -> None:
                 selected_feature_x=selected_feature_x,
                 selected_feature_y=selected_feature_y,
                 selected_feature_valid=selected_feature_valid,
+                selected_feature_confidence=selected_feature_confidence,
                 selected_feature_reasons=selected_feature_reasons,
                 preprocess_meta=preprocess_meta,
                 selected_roi=selected_roi,
@@ -921,6 +1095,7 @@ def main() -> None:
                 fps=fps,
                 camera_resolution=(camera_width, camera_height),
                 calibration_session=calibration_session,
+                static_boundary_ellipse=static_boundary_ellipse,
                 calibration_points=calibration_points,
                 screen_uv=displayed_screen_uv,
                 tracking_valid=tracking_valid,
@@ -942,18 +1117,20 @@ def main() -> None:
             if key == ord("q"):
                 break
             elif key == ord("r"):
-                ema_filter.reset()
+                quality_tracker.reset()
+                kalman_filter.reset()
                 calibration_session = None
                 calibration_window_open = False
                 destroy_window(CALIBRATION_WINDOW_NAME)
                 displayed_screen_uv = None
                 last_valid_screen_ts_ms = None
                 tracking_valid = False
-                status_message = "已重置 EMA 与校准状态。"
+                status_message = "已重置滤波与校准状态。"
                 print(status_message)
             elif key == ord("c"):
                 ROI_STATE.clear()
-                ema_filter.reset()
+                quality_tracker.reset()
+                kalman_filter.reset()
                 calibration_session = None
                 calibration_window_open = False
                 destroy_window(CALIBRATION_WINDOW_NAME)
@@ -967,13 +1144,15 @@ def main() -> None:
                     status_message = "请先框选有效 ROI，再开始校准。"
                     print(status_message)
                 else:
-                    ema_filter.reset()
+                    quality_tracker.reset()
+                    kalman_filter.reset()
                     calibration_session = begin_calibration_session(
                         now_ms=now_ms,
                         settle_ms=args.calibration_settle_ms,
                         capture_ms=args.calibration_capture_ms,
                         min_valid_frames=args.calibration_min_valid_frames,
                         margin=args.calibration_margin,
+                        point_pattern="nine",
                     )
                     calibration_points = calibration_session.points
                     displayed_screen_uv = None
