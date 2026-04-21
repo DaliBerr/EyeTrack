@@ -694,6 +694,7 @@ def main() -> None:
         print("rtsp url:", display_rtsp_url)
     elif fpv_output_mode == "record":
         print("fpv output:", f"record -> {os.path.abspath(args.record_dir)}")
+        print("record target:", f"{args.fpv_width}x{args.fpv_height}@{int(args.fpv_fps)}")
         print("record key:", record_key)
     else:
         print("rtsp:", "disabled (eye-only mode)")
@@ -880,7 +881,8 @@ def main() -> None:
                             output_path = video_recorder.start()
                             last_recorded_fpv_ts = None
                             recording_active = True
-                            status_message = f"Recording started: {os.path.basename(output_path)}"
+                            encoder_name = "unknown" if video_recorder.encoder_name is None else video_recorder.encoder_name
+                            status_message = f"Recording started with {encoder_name}: {os.path.basename(output_path)}"
                         except Exception as exc:
                             status_message = f"Failed to start recording: {exc}"
                     needs_metadata_publish = True

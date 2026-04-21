@@ -38,12 +38,12 @@ class RaspberryPiRecorderTests(unittest.TestCase):
         self.assertNotIn("rtph264pay", launch)
         self.assertNotIn("RTSP", launch)
 
-    def test_resolve_recording_h264_encoder_name_rejects_x264_only(self) -> None:
+    def test_resolve_recording_h264_encoder_name_allows_x264_only(self) -> None:
         fake_gst = mock.Mock()
         fake_gst.ElementFactory.find.side_effect = lambda name: object() if name == "x264enc" else None
 
-        with self.assertRaisesRegex(RuntimeError, "x264enc software fallback is disabled"):
-            resolve_recording_h264_encoder_name(fake_gst)
+        encoder_name = resolve_recording_h264_encoder_name(fake_gst)
+        self.assertEqual(encoder_name, "x264enc")
 
 
 if __name__ == "__main__":

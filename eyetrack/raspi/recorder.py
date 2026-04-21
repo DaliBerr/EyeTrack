@@ -17,14 +17,10 @@ def _quote_gst_string(value: str) -> str:
 
 def resolve_recording_h264_encoder_name(Gst) -> str:
     try:
-        return resolve_h264_encoder_name(Gst, allow_software_fallback=False)
+        return resolve_h264_encoder_name(Gst, allow_software_fallback=True)
     except RuntimeError as exc:
-        if Gst.ElementFactory.find("x264enc") is not None:
-            raise RuntimeError(
-                "record mode requires a Raspberry Pi hardware H.264 encoder; x264enc software fallback is disabled."
-            ) from exc
         raise RuntimeError(
-            "record mode requires a Raspberry Pi hardware H.264 encoder (expected one of v4l2h264enc, v4l2slh264enc, omxh264enc)."
+            "record mode requires an available H.264 encoder (expected a Raspberry Pi hardware encoder or x264enc software fallback)."
         ) from exc
 
 

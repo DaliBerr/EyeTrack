@@ -283,7 +283,9 @@ python realtime_eye_direction_pi.py \
 - `cam0` 使用 `YUV420@384x240` 直接采集近眼红外图，不走 ROI，不做 CPU resize。
 - `cam1` 作为 FPV 输出底图；`--fpv_output_mode rtsp` 时默认地址为 `rtsp://<pi-ip>:8554/fpv`。
 - `--fpv_output_mode record` 时会把 FPV 画面录制到本地 `recordings/`（或 `--record_dir` 指定目录），文件名形如 `fpv_gaze_YYYYMMDD_HHMMSS.mkv`。
+- 录制模式默认目标就是 `1280x720 @ 30fps`；在 Raspberry Pi 5 上会优先尝试硬件 H.264 encoder，不可用时自动回退到 `x264enc` 软件编码。
 - 本地录制只会在校准完成后响应录制按键；录制视频会叠加轻量 gaze 空心圆 marker，不会烧录调试 HUD。
+- 如果 Pi 5 上软件编码仍然吃紧，建议继续下调 `--record_bitrate_kbps`，或进一步降低 `--fpv_width/--fpv_height`。
 - RTSP 模式下仍保持原有行为：只发送原始 FPV 视频，不把 gaze/calibration 图形直接画进视频。
 - gaze、校准目标和状态会以 JSON 行输出到 stdout，可选再用 `--metadata_udp_host/--metadata_udp_port` 通过 UDP 额外发送给接收端叠加。
 - 终端按键：`s` 开始校准，`x` 取消校准，`r` 重置跟踪与校准，`q` 退出。

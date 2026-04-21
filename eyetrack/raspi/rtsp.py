@@ -37,7 +37,8 @@ def build_h264_encoder_fragment(encoder_name: str, fps: int, bitrate_kbps: int) 
     if encoder_name == "x264enc":
         return (
             f"x264enc tune=zerolatency speed-preset=ultrafast bitrate={int(bitrate_kbps)} "
-            f"key-int-max={max(int(fps), 1)} ! h264parse"
+            f"key-int-max={max(int(fps), 1)} bframes=0 cabac=false sliced-threads=true threads=2 byte-stream=true "
+            f"! h264parse"
         )
     return f"{encoder_name} ! h264parse"
 
