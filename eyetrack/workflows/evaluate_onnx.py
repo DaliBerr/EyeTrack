@@ -41,22 +41,22 @@ def compare_onnx_with_pytorch(
     limit: int | None = None,
 ) -> Dict[str, float]:
     """
-    summary: 比较 PyTorch checkpoint 与 ONNX 模型的输出一致性
-    param model_path: ONNX 模型路径
-    param checkpoint_path: PyTorch checkpoint 路径
-    param root_dir: 数据集根目录
-    param split: 数据划分
-    param input_width: 模型输入宽度
-    param input_height: 模型输入高度
-    param in_channels: 输入通道数
-    param num_classes: 类别数量
-    param base_channels: U-Net 基础通道数
-    param use_amp: 是否启用 AMP
-    param device: 运行设备
-    param batch_size: DataLoader 批大小
-    param num_workers: DataLoader 进程数
-    param limit: 最多比较多少个样本
-    return: 一致性指标
+    summary: PyTorch checkpoint ONNX model output
+    param model_path: ONNX modelpath
+    param checkpoint_path: PyTorch checkpoint path
+    param root_dir: dataset directory
+    param split:
+    param input_width: modelinput
+    param input_height: modelinput
+    param in_channels: input
+    param num_classes: classcount
+    param base_channels: U-Net
+    param use_amp: enable AMP
+    param device:
+    param batch_size: DataLoader batch
+    param num_workers: DataLoader
+    param limit: sample
+    return:
     """
     import onnxruntime as ort
 
@@ -100,14 +100,14 @@ def compare_onnx_with_pytorch(
         allow_partial_state_dict=checkpoint_is_qat,
     )
     print("PyTorch model metadata:", resolved_model_metadata)
-    print("PyTorch checkpoint 信息:", load_info)
+    print("PyTorch checkpoint info:", load_info)
     if checkpoint_is_qat:
         model.apply(torch.ao.quantization.disable_observer)
         freeze_bn_fn = getattr(torch.ao.quantization, "freeze_bn_stats", None)
         if freeze_bn_fn is not None:
             model.apply(freeze_bn_fn)
         model = strip_prepared_qat_model_to_float(model).to(torch_device)
-        print("PyTorch 对比模型已从 QAT checkpoint 恢复为融合后的浮点模型。")
+        print("PyTorch model QAT checkpoint model.")
     model.eval()
 
     session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
@@ -154,24 +154,24 @@ def compare_onnx_with_pytorch(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="评估 ONNX 分割模型，并可选与 PyTorch checkpoint 对比")
-    parser.add_argument("--model_path", type=str, default=DEFAULT_ONNX_PATH, help="ONNX 模型路径")
-    parser.add_argument("--root_dir", type=str, required=True, help="OpenEDS 风格数据集根目录")
-    parser.add_argument("--split", type=str, default="validation", help="数据划分")
+    parser = argparse.ArgumentParser(description=" ONNX model, optional PyTorch checkpoint ")
+    parser.add_argument("--model_path", type=str, default=DEFAULT_ONNX_PATH, help="ONNX modelpath")
+    parser.add_argument("--root_dir", type=str, required=True, help="OpenEDS dataset directory")
+    parser.add_argument("--split", type=str, default="validation", help=" ")
     parser.add_argument("--backend", type=str, default="cpu", choices=["cpu", "nnapi"], help="ONNX Runtime backend")
-    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="模型输入宽度")
-    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="模型输入高度")
-    parser.add_argument("--batch_size", type=int, default=1, help="评估批大小")
-    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader 进程数")
-    parser.add_argument("--limit", type=int, default=None, help="最多评估多少个样本")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="modelinput ")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="modelinput ")
+    parser.add_argument("--batch_size", type=int, default=1, help=" batch ")
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader ")
+    parser.add_argument("--limit", type=int, default=None, help=" sample")
 
-    parser.add_argument("--checkpoint_path", type=str, default=None, help="可选 PyTorch checkpoint，用于一致性对比")
-    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="模型输入通道数")
-    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="模型输出类别数")
-    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net 基础通道数")
-    parser.add_argument("--device", type=str, default="auto", help="PyTorch 对比时的运行设备")
-    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="PyTorch 对比时启用 AMP")
-    parser.add_argument("--no-amp", action="store_false", dest="amp", help="PyTorch 对比时禁用 AMP")
+    parser.add_argument("--checkpoint_path", type=str, default=None, help="optional PyTorch checkpoint, ")
+    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="modelinput ")
+    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="modeloutputclass ")
+    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net ")
+    parser.add_argument("--device", type=str, default="auto", help="PyTorch ")
+    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="PyTorch enable AMP")
+    parser.add_argument("--no-amp", action="store_false", dest="amp", help="PyTorch disable AMP")
     return parser.parse_args()
 
 

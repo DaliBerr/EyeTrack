@@ -27,43 +27,43 @@ VALID_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 def natural_key(text: str) -> List[Any]:
     """
-    summary: 生成自然排序键
-    param text: 输入字符串
-    return: 可用于排序的键列表
+    summary:
+    param text: input
+    return: list
     """
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
 
 
 class SegmentationInferenceDataset(Dataset):
     """
-    summary: 仅用于推理的灰度图数据集
-    param image_dir: 输入图像目录
-    return: 可供 DataLoader 使用的数据集对象
+    summary: inference dataset
+    param image_dir: inputimagedirectory
+    return: DataLoader dataset
     """
 
     def __init__(self, image_dir: str, input_width: int = DEFAULT_INPUT_WIDTH, input_height: int = DEFAULT_INPUT_HEIGHT):
         """
-        summary: 初始化推理数据集并收集图像路径
-        param image_dir: 输入图像目录
-        return: 无
+        summary: inferencedataset imagepath
+        param image_dir: inputimagedirectory
+        return: none
         """
         self.image_dir = Path(image_dir)
         self.input_width = input_width
         self.input_height = input_height
 
         if not self.image_dir.exists():
-            raise FileNotFoundError(f"找不到图像目录: {self.image_dir}")
+            raise FileNotFoundError(f"not foundimagedirectory: {self.image_dir}")
 
         self.image_paths = self._collect_image_paths()
 
         if len(self.image_paths) == 0:
-            raise RuntimeError(f"目录中没有找到可用图像: {self.image_dir}")
+            raise RuntimeError(f"directory image: {self.image_dir}")
 
     def _collect_image_paths(self) -> List[Path]:
         """
-        summary: 收集目录中所有可用图像路径
-        param self: 数据集实例
-        return: 图像路径列表
+        summary: directory imagepath
+        param self: dataset
+        return: imagepathlist
         """
         image_paths = []
 
@@ -76,17 +76,17 @@ class SegmentationInferenceDataset(Dataset):
 
     def __len__(self) -> int:
         """
-        summary: 返回图像数量
-        param self: 数据集实例
-        return: 数据集长度
+        summary: returnimagecount
+        param self: dataset
+        return: dataset
         """
         return len(self.image_paths)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
         """
-        summary: 读取单张灰度图并转为张量
-        param index: 图像索引
-        return: 包含 image 和 id 的字典
+        summary: read
+        param index: imageindex
+        return: image id dict
         """
         image_path = self.image_paths[index]
         image = Image.open(image_path).convert("L")
@@ -101,11 +101,11 @@ class SegmentationInferenceDataset(Dataset):
 
 def resolve_image_dir(image_dir: str | None, root_dir: str | None, split: str) -> Path:
     """
-    summary: 解析实际用于推理的图像目录
-    param image_dir: 显式传入的图像目录
-    param root_dir: 数据集根目录
-    param split: 数据划分名称
-    return: 最终图像目录路径
+    summary: parse inference imagedirectory
+    param image_dir: imagedirectory
+    param root_dir: dataset directory
+    param split:
+    return: imagedirectorypath
     """
     if image_dir is not None:
         return Path(image_dir)
@@ -113,7 +113,7 @@ def resolve_image_dir(image_dir: str | None, root_dir: str | None, split: str) -
     if root_dir is not None:
         return Path(root_dir) / split / "images"
 
-    raise ValueError("必须提供 --image_dir，或提供 --root_dir 与 --split。")
+    raise ValueError("You must provide --image_dir, or provide both --root_dir and --split.")
 
 
 def run_prediction_to_npy(
@@ -133,19 +133,19 @@ def run_prediction_to_npy(
     device: str = "auto",
 ) -> None:
     """
-    summary: 执行分割模型推理并将预测标签保存为 npy
-    param checkpoint_path: 模型 checkpoint 路径
-    param output_dir: 预测标签输出目录
-    param image_dir: 输入图像目录
-    param root_dir: 数据集根目录
-    param split: 数据划分名称
-    param batch_size: 批大小
-    param num_workers: DataLoader 进程数
-    param in_channels: 模型输入通道数
-    param num_classes: 模型输出类别数
-    param base_channels: U-Net 基础通道数
-    param device: 运行设备
-    return: 无
+    summary: modelinference predictionlabelsave npy
+    param checkpoint_path: model checkpoint path
+    param output_dir: predictionlabeloutputdirectory
+    param image_dir: inputimagedirectory
+    param root_dir: dataset directory
+    param split:
+    param batch_size: batch
+    param num_workers: DataLoader
+    param in_channels: modelinput
+    param num_classes: modeloutputclass
+    param base_channels: U-Net
+    param device:
+    return: none
     """
     save_dir = Path(output_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -192,7 +192,7 @@ def run_prediction_to_npy(
         device=torch_device,
         optimizer=None,
     )
-    print("checkpoint 信息:", load_info)
+    print("checkpoint info:", load_info)
 
     model.eval()
     saved_count = 0
@@ -210,44 +210,44 @@ def run_prediction_to_npy(
                 save_path = save_dir / f"{sample_id}.npy"
                 np.save(save_path, pred)
                 saved_count += 1
-                print(f"[{saved_count}/{len(dataset)}] 已保存预测: {save_path}")
+                print(f"[{saved_count}/{len(dataset)}] saveprediction: {save_path}")
 
-    print(f"\n预测完成，共保存 {saved_count} 个 .npy 文件到: {save_dir}")
+    print(f"\npredictioncompleted, save {saved_count}.npy file: {save_dir}")
 
 
 def parse_args() -> argparse.Namespace:
     """
-    summary: 解析命令行参数
-    param 无: 无
-    return: 参数对象
+    summary: parseCLIarguments
+    param none: none
+    return: arguments
     """
-    parser = argparse.ArgumentParser(description="执行分割模型推理并将结果保存为 .npy 标签图")
+    parser = argparse.ArgumentParser(description=" modelinference save.npy label ")
 
-    parser.add_argument("--checkpoint_path", type=str, required=True, help="模型 checkpoint 路径")
-    parser.add_argument("--output_dir", type=str, required=True, help="预测结果 .npy 输出目录")
-    parser.add_argument("--image_dir", type=str, default=None, help="输入灰度图目录")
-    parser.add_argument("--root_dir", type=str, default=None, help="数据集根目录，若提供则读取 root_dir/split/images")
-    parser.add_argument("--split", type=str, default="validation", help="数据划分名称，默认 validation")
+    parser.add_argument("--checkpoint_path", type=str, required=True, help="model checkpoint path")
+    parser.add_argument("--output_dir", type=str, required=True, help="prediction.npy outputdirectory")
+    parser.add_argument("--image_dir", type=str, default=None, help="input directory")
+    parser.add_argument("--root_dir", type=str, default=None, help="dataset directory, read root_dir/split/images")
+    parser.add_argument("--split", type=str, default="validation", help=", default validation")
 
-    parser.add_argument("--batch_size", type=int, default=1, help="推理批大小")
-    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader 进程数")
-    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="模型输入通道数")
-    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="模型输出类别数")
-    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net 基础通道数")
-    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="模型输入宽度")
-    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="模型输入高度")
-    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="启用 CUDA AMP 推理")
-    parser.add_argument("--no-amp", action="store_false", dest="amp", help="禁用 CUDA AMP 推理")
-    parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
+    parser.add_argument("--batch_size", type=int, default=1, help="inferencebatch ")
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader ")
+    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="modelinput ")
+    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="modeloutputclass ")
+    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net ")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="modelinput ")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="modelinput ")
+    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="enable CUDA AMP inference")
+    parser.add_argument("--no-amp", action="store_false", dest="amp", help="disable CUDA AMP inference")
+    parser.add_argument("--device", type=str, default="auto", help=": auto/cpu/cuda")
 
     return parser.parse_args()
 
 
 def main() -> None:
     """
-    summary: 主函数，执行预测并保存 npy
-    param 无: 无
-    return: 无
+    summary: main function, prediction save npy
+    param none: none
+    return: none
     """
     args = parse_args()
 

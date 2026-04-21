@@ -549,7 +549,7 @@ def resolve_tracking_features(
         valid = bool(result.iris_only_valid and result.iris_feature_x is not None and result.iris_feature_y is not None)
         return result.iris_feature_x, result.iris_feature_y, valid, tuple(reasons)
 
-    raise ValueError(f"不支持的特征模式: {feature_mode}")
+    raise ValueError(f"Unsupported feature mode: {feature_mode}")
 
 
 def build_five_point_calibration_points(margin: float = 0.1) -> list[CalibrationPoint]:
@@ -598,7 +598,7 @@ def begin_calibration_session(
     elif normalized_pattern == "nine":
         points = build_nine_point_calibration_points(margin=margin)
     else:
-        raise ValueError(f"不支持的校准点布局: {point_pattern}")
+        raise ValueError(f"Unsupported calibration point layout: {point_pattern}")
 
     return CalibrationSession(
         points=points,
@@ -644,7 +644,7 @@ def build_static_boundary_ellipse(
     if samples.shape[0] == 0:
         return None
 
-    # 先按中心点稳定性去掉离群帧，减少眨眼/遮挡对静态眼眶的影响。
+    #, /.
     center_xy = samples[:, :2]
     center_xy_median = np.median(center_xy, axis=0)
     center_distance = np.linalg.norm(center_xy - center_xy_median[np.newaxis, :], axis=1)
@@ -699,11 +699,11 @@ def fit_five_point_affine(
     expected_point_count: int = 5,
 ) -> CalibrationModel:
     if len(samples) != expected_point_count:
-        raise ValueError(f"校准点数量不足，期望 {expected_point_count} 个，实际 {len(samples)} 个。")
+        raise ValueError(f"Insufficient calibration points, {expected_point_count}, {len(samples)}.")
 
     point_names = [sample.point_name for sample in samples]
     if len(set(point_names)) != expected_point_count:
-        raise ValueError("校准点不完整或存在重复，无法拟合仿射映射。")
+        raise ValueError("Calibration points are incomplete or duplicated; cannot fit affine mapping.")
 
     source = np.array(
         [[sample.feature_dx, sample.feature_dy, 1.0] for sample in samples],
@@ -716,7 +716,7 @@ def fit_five_point_affine(
     weights = np.array([float(np.clip(sample.weight, 0.05, 1.0)) for sample in samples], dtype=np.float64)
 
     if np.linalg.matrix_rank(source) < 3:
-        raise ValueError("校准样本矩阵退化，无法拟合仿射映射。")
+        raise ValueError("Calibration sample matrix is degenerate; cannot fit affine mapping.")
 
     weighted_source = source * np.sqrt(weights)[:, np.newaxis]
     weighted_target = target * np.sqrt(weights)[:, np.newaxis]
@@ -736,11 +736,11 @@ def fit_nine_point_polynomial(
     ridge_lambda: float = 1e-4,
 ) -> CalibrationModel:
     if len(samples) != expected_point_count:
-        raise ValueError(f"校准点数量不足，期望 {expected_point_count} 个，实际 {len(samples)} 个。")
+        raise ValueError(f"Insufficient calibration points, {expected_point_count}, {len(samples)}.")
 
     point_names = [sample.point_name for sample in samples]
     if len(set(point_names)) != expected_point_count:
-        raise ValueError("校准点不完整或存在重复，无法拟合二次映射。")
+        raise ValueError("Calibration points are incomplete or duplicated; cannot fit quadratic mapping.")
 
     source = np.array(
         [
@@ -763,7 +763,7 @@ def fit_nine_point_polynomial(
     weights = np.array([float(np.clip(sample.weight, 0.05, 1.0)) for sample in samples], dtype=np.float64)
 
     if np.linalg.matrix_rank(source) < 6:
-        raise ValueError("校准样本矩阵退化，无法拟合二次映射。")
+        raise ValueError("Calibration sample matrix is degenerate; cannot fit quadratic mapping.")
 
     weighted_source = source * np.sqrt(weights)[:, np.newaxis]
     weighted_target = target * np.sqrt(weights)[:, np.newaxis]
@@ -797,7 +797,7 @@ def fit_calibration_mapping(
                 ridge_lambda=ridge_lambda,
             )
         except ValueError:
-            # 当二次模型退化时回退到仿射，保证可用性。
+            # model fallback,.
             pass
 
     return fit_five_point_affine(samples=samples, expected_point_count=expected_point_count)
@@ -889,12 +889,12 @@ def advance_calibration_session(
 
     point = session.current_point
     if point is None:
-        return fail_calibration_session(session, "校准点索引异常，无法继续。")
+        return fail_calibration_session(session, "Calibration point index is invalid; cannot continue.")
 
     if len(session.current_point_samples) < session.min_valid_frames:
         return fail_calibration_session(
             session,
-            f"{point.name} 采样失败：有效帧不足 {session.min_valid_frames}。",
+            f"{point.name}: insufficient valid frames {session.min_valid_frames}.",
         )
 
     point_samples = np.array(session.current_point_samples, dtype=np.float64)

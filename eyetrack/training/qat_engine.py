@@ -11,18 +11,18 @@ VALID_QAT_BACKENDS = {"qnnpack", "fbgemm"}
 
 def list_supported_quantized_engines() -> list[str]:
     """
-    summary: 获取当前 PyTorch 构建支持的 quantized engines
-    param 无: 无
-    return: 支持列表（小写）
+    summary: current PyTorch supports quantized engines
+    param none: none
+    return: supportslist()
     """
     return [str(engine).lower() for engine in torch.backends.quantized.supported_engines]
 
 
 def choose_supported_qat_backend(requested_backend: str) -> str:
     """
-    summary: 在当前环境中选择可用 backend，必要时自动回退
-    param requested_backend: 请求的 backend
-    return: 最终可用 backend
+    summary: current backend, fallback
+    param requested_backend: backend
+    return: backend
     """
     requested = normalize_qat_backend(requested_backend)
     supported = list_supported_quantized_engines()
@@ -42,28 +42,28 @@ def choose_supported_qat_backend(requested_backend: str) -> str:
             return candidate
 
     raise RuntimeError(
-        "当前 PyTorch 构建没有可用的 quantized engine，"
+        "current PyTorch quantized engine, "
         f"requested={requested} supported={supported}"
     )
 
 
 def normalize_qat_backend(backend: str) -> str:
     """
-    summary: 规范化 QAT backend 名称并校验合法性
-    param backend: backend 名称
-    return: 规范化后的 backend
+    summary: QAT backend
+    param backend: backend
+    return: backend
     """
     normalized = backend.strip().lower()
     if normalized not in VALID_QAT_BACKENDS:
-        raise ValueError(f"不支持的 qat_backend: {backend}，可选值: {sorted(VALID_QAT_BACKENDS)}")
+        raise ValueError(f"unsupported qat_backend: {backend}, optional: {sorted(VALID_QAT_BACKENDS)}")
     return normalized
 
 
 def set_qat_backend(backend: str) -> str:
     """
-    summary: 设置 PyTorch quantized engine
-    param backend: backend 名称
-    return: 规范化后的 backend
+    summary: PyTorch quantized engine
+    param backend: backend
+    return: backend
     """
     selected = choose_supported_qat_backend(backend)
     torch.backends.quantized.engine = selected
@@ -72,10 +72,10 @@ def set_qat_backend(backend: str) -> str:
 
 def prepare_model_for_qat(model: nn.Module, backend: str = "qnnpack") -> nn.Module:
     """
-    summary: 将模型准备为 QAT 训练形态
-    param model: 目标模型
-    param backend: qnnpack 或 fbgemm
-    return: 已准备好的模型
+    summary: model QAT training
+    param model: model
+    param backend: qnnpack fbgemm
+    return: model
     """
     normalized_backend = set_qat_backend(backend)
 
@@ -96,13 +96,13 @@ def update_qat_epoch_state(
     freeze_bn_after_epoch: int = 2,
 ) -> Dict[str, Any]:
     """
-    summary: 根据当前 QAT 阶段轮次切换 observer 与 BN 统计状态
-    param model: QAT 模型
-    param stage_epoch: QAT 阶段内当前轮次，从 1 开始
-    param total_stage_epochs: QAT 阶段总轮次
-    param disable_observer_last_n_epochs: 最后多少轮关闭 observer
-    param freeze_bn_after_epoch: 从第几轮开始冻结 BN 统计
-    return: 当前状态信息
+    summary: current QAT observer BN
+    param model: QAT model
+    param stage_epoch: QAT current, 1
+    param total_stage_epochs: QAT
+    param disable_observer_last_n_epochs: observer
+    param freeze_bn_after_epoch: BN
+    return: current
     """
     observer_enabled = True
     if disable_observer_last_n_epochs > 0:
@@ -134,10 +134,10 @@ def update_qat_epoch_state(
 
 def convert_prepared_qat_model(model: nn.Module, backend: str = "qnnpack") -> nn.Module:
     """
-    summary: 将已 prepare_qat 的模型转换为量化推理模型副本
-    param model: 已 prepare_qat 的模型
-    param backend: qnnpack 或 fbgemm
-    return: 量化推理模型（CPU）
+    summary: prepare_qat model quantizationinferencemodel
+    param model: prepare_qat model
+    param backend: qnnpack fbgemm
+    return: quantizationinferencemodel(CPU)
     """
     set_qat_backend(backend)
     converted = copy.deepcopy(model).cpu().eval()
@@ -146,9 +146,9 @@ def convert_prepared_qat_model(model: nn.Module, backend: str = "qnnpack") -> nn
 
 def _strip_qat_modules_to_float_inplace(module: nn.Module) -> None:
     """
-    summary: 递归将 QAT 模块替换为对应的浮点模块
-    param module: 待处理模块
-    return: 无
+    summary: QAT
+    param module: process
+    return: none
     """
     for name, child in list(module.named_children()):
         _strip_qat_modules_to_float_inplace(child)
@@ -158,9 +158,9 @@ def _strip_qat_modules_to_float_inplace(module: nn.Module) -> None:
 
 def strip_prepared_qat_model_to_float(model: nn.Module) -> nn.Module:
     """
-    summary: 将已 prepare_qat 的模型转换为便于导出的浮点模型副本
-    param model: 已 prepare_qat 且已加载权重的模型
-    return: 去除 fake quant 的浮点模型（CPU）
+    summary: prepare_qat model model
+    param model: prepare_qat model
+    return: fake quant model(CPU)
     """
     stripped = copy.deepcopy(model).cpu().eval()
     _strip_qat_modules_to_float_inplace(stripped)

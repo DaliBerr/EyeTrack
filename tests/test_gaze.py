@@ -154,7 +154,7 @@ class GazeCalibrationTests(unittest.TestCase):
             for index, point in enumerate(points[:4])
         ]
 
-        with self.assertRaisesRegex(ValueError, "校准点数量不足"):
+        with self.assertRaisesRegex(ValueError, "Insufficient calibration points"):
             fit_five_point_affine(samples)
 
     def test_fit_five_point_affine_rejects_degenerate_source(self) -> None:
@@ -170,7 +170,7 @@ class GazeCalibrationTests(unittest.TestCase):
             for index, point in enumerate(points)
         ]
 
-        with self.assertRaisesRegex(ValueError, "退化"):
+        with self.assertRaisesRegex(ValueError, " "):
             fit_five_point_affine(samples)
 
     def test_predict_screen_point_returns_none_without_model(self) -> None:
@@ -309,7 +309,7 @@ class GazeCalibrationTests(unittest.TestCase):
 
         self.assertEqual(session.state, "failed")
         self.assertIsNotNone(session.failure_reason)
-        self.assertIn("有效帧不足", session.failure_reason)
+        self.assertIn("insufficient valid frames", session.failure_reason)
 
     def test_calibration_session_completes_and_predicts(self) -> None:
         linear = np.array([[0.8, -0.1], [0.15, 0.7]], dtype=np.float64)

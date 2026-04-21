@@ -22,19 +22,19 @@ def benchmark_onnx_model(
     enable_profiling: bool = False,
 ) -> None:
     """
-    summary: 对 ONNX 模型做简单时延基准
-    param model_path: ONNX 模型路径
-    param backend: cpu 或 nnapi
-    param input_manifest: 文本清单，每行一个图像路径
-    param input_width: 模型输入宽度
-    param input_height: 模型输入高度
-    param warmup_runs: 预热轮数
-    param benchmark_runs: 正式计时轮数
-    param enable_profiling: 是否开启 ORT profiling
-    return: 无
+    summary: ONNX model
+    param model_path: ONNX modelpath
+    param backend: cpu nnapi
+    param input_manifest:, imagepath
+    param input_width: modelinput
+    param input_height: modelinput
+    param warmup_runs:
+    param benchmark_runs:
+    param enable_profiling: ORT profiling
+    return: none
     """
     if input_manifest is None:
-        raise ValueError("必须提供 --input_manifest，且每行一个图像路径。")
+        raise ValueError("--input_manifest is required, with one image path per line.")
 
     image_paths = load_manifest_paths(input_manifest)
     session = build_onnx_session(model_path=model_path, backend=backend, enable_profiling=enable_profiling)
@@ -73,15 +73,15 @@ def benchmark_onnx_model(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="对 ONNX 分割模型执行简单时延基准")
-    parser.add_argument("--model_path", type=str, default=DEFAULT_ONNX_PATH, help="ONNX 模型路径")
+    parser = argparse.ArgumentParser(description=" ONNX model ")
+    parser.add_argument("--model_path", type=str, default=DEFAULT_ONNX_PATH, help="ONNX modelpath")
     parser.add_argument("--backend", type=str, default="cpu", choices=["cpu", "nnapi"], help="ONNX Runtime backend")
-    parser.add_argument("--input_manifest", type=str, required=True, help="文本清单，每行一个图像路径")
-    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="模型输入宽度")
-    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="模型输入高度")
-    parser.add_argument("--warmup_runs", type=int, default=20, help="预热轮数")
-    parser.add_argument("--benchmark_runs", type=int, default=100, help="正式计时轮数")
-    parser.add_argument("--enable_profiling", action="store_true", help="启用 ORT profiling")
+    parser.add_argument("--input_manifest", type=str, required=True, help=", imagepath")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="modelinput ")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="modelinput ")
+    parser.add_argument("--warmup_runs", type=int, default=20, help=" ")
+    parser.add_argument("--benchmark_runs", type=int, default=100, help=" ")
+    parser.add_argument("--enable_profiling", action="store_true", help="enable ORT profiling")
     return parser.parse_args()
 
 

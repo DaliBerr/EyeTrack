@@ -11,48 +11,48 @@ import matplotlib.pyplot as plt
 
 def natural_key(text: str) -> List[Any]:
     """
-    summary: 生成自然排序键
-    param text: 输入字符串
-    return: 可用于自然排序的键列表
+    summary:
+    param text: input
+    return: list
     """
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
 
 
 def ensure_dir(dir_path: str) -> None:
     """
-    summary: 确保目录存在
-    param dir_path: 目录路径
-    return: 无
+    summary: directory
+    param dir_path: directorypath
+    return: none
     """
     os.makedirs(dir_path, exist_ok=True)
 
 
 def discover_sequence_csvs(input_path: str, csv_name: str = "geometry.csv") -> List[Tuple[str, str]]:
     """
-    summary: 发现 sequence_outputs 结构下的各序列 geometry.csv
-    param input_path: 根目录、单个序列目录或单个 csv 路径
-    param csv_name: 序列目录中的 csv 文件名
-    return: 列表，每项为 (sequence_name, csv_path)
+    summary: sequence_outputs sequence geometry.csv
+    param input_path: directory, sequencedirectory csv path
+    param csv_name: sequencedirectory csv file
+    return: list, (sequence_name, csv_path)
     """
     results: List[Tuple[str, str]] = []
 
-    # 情况1：直接传入单个 csv
+    # 1: csv
     if os.path.isfile(input_path):
         if not input_path.lower().endswith(".csv"):
-            raise ValueError(f"输入文件不是 csv: {input_path}")
+            raise ValueError(f"inputfile csv: {input_path}")
 
         parent_name = os.path.basename(os.path.dirname(input_path))
         seq_name = parent_name if parent_name else os.path.splitext(os.path.basename(input_path))[0]
         return [(seq_name, input_path)]
 
-    # 情况2：传入单个序列目录，例如 S_37
+    # 2: sequencedirectory, S_37
     if os.path.isdir(input_path):
         direct_csv = os.path.join(input_path, csv_name)
         if os.path.isfile(direct_csv):
             seq_name = os.path.basename(os.path.normpath(input_path))
             return [(seq_name, direct_csv)]
 
-        # 情况3：传入总目录，例如 sequence_outputs
+        # 3: directory, sequence_outputs
         for name in os.listdir(input_path):
             subdir = os.path.join(input_path, name)
             if not os.path.isdir(subdir):
@@ -65,21 +65,21 @@ def discover_sequence_csvs(input_path: str, csv_name: str = "geometry.csv") -> L
         results.sort(key=lambda item: natural_key(item[0]))
         return results
 
-    raise FileNotFoundError(f"输入路径不存在: {input_path}")
+    raise FileNotFoundError(f"inputpath: {input_path}")
 
 
 def load_sequence_csv(csv_path: str) -> pd.DataFrame:
     """
-    summary: 读取单个序列 csv 并做基础列检查
-    param csv_path: csv 文件路径
-    return: 包含基础字段的 DataFrame
+    summary: read sequence csv
+    param csv_path: csv filepath
+    return: DataFrame
     """
     df = pd.read_csv(csv_path)
 
     required_cols = ["norm_dx", "norm_dy"]
     for col in required_cols:
         if col not in df.columns:
-            raise ValueError(f"{csv_path} 缺少必要列: {col}")
+            raise ValueError(f"{csv_path} missing: {col}")
 
     if "frame" not in df.columns:
         df["frame"] = np.arange(len(df), dtype=int)
@@ -101,20 +101,20 @@ def load_sequence_csv(csv_path: str) -> pd.DataFrame:
 
 def rolling_median(series: pd.Series, window: int) -> pd.Series:
     """
-    summary: 计算中心滑动中位数
-    param series: 输入序列
-    param window: 窗口大小
-    return: 中位数序列
+    summary:
+    param series: inputsequence
+    param window: window
+    return: sequence
     """
     return series.rolling(window=window, center=True, min_periods=1).median()
 
 
 def dilate_boolean_mask(mask: np.ndarray, radius: int) -> np.ndarray:
     """
-    summary: 对布尔掩码做一维膨胀
-    param mask: 输入布尔数组
-    param radius: 膨胀半径
-    return: 膨胀后的布尔数组
+    summary: mask
+    param mask: input array
+    param radius:
+    return: array
     """
     if radius <= 0:
         return mask.copy()
@@ -126,9 +126,9 @@ def dilate_boolean_mask(mask: np.ndarray, radius: int) -> np.ndarray:
 
 def find_runs(mask: np.ndarray) -> List[Tuple[int, int]]:
     """
-    summary: 找出布尔数组中为 True 的连续区间
-    param mask: 输入布尔数组
-    return: 连续区间列表，每项为 (start, end)，包含端点
+    summary: array True
+    param mask: input array
+    return: list, (start, end),
     """
     runs: List[Tuple[int, int]] = []
     n = len(mask)
@@ -160,19 +160,19 @@ def detect_bad_frames(
     bad_pad: int
 ) -> Dict[str, np.ndarray]:
     """
-    summary: 综合多个规则做逐帧异常检测
-    param df: 输入序列 DataFrame
-    param radius_min: norm_radius 最小阈值
-    param radius_max: norm_radius 最大阈值
-    param area_ratio_min: pupil_iris_area_ratio 最小阈值
-    param area_ratio_max: pupil_iris_area_ratio 最大阈值
-    param dx_jump_thresh: norm_dx 单步跳变阈值
-    param dy_jump_thresh: norm_dy 单步跳变阈值
-    param dx_dev_thresh: norm_dx 相对局部中位数偏差阈值
-    param dy_dev_thresh: norm_dy 相对局部中位数偏差阈值
-    param local_window: 局部中位数窗口
-    param bad_pad: 核心异常向两侧扩张的帧数
-    return: 各类异常掩码组成的字典
+    summary: anomaly
+    param df: inputsequence DataFrame
+    param radius_min: norm_radius minimumthreshold
+    param radius_max: norm_radius maximumthreshold
+    param area_ratio_min: pupil_iris_area_ratio minimumthreshold
+    param area_ratio_max: pupil_iris_area_ratio maximumthreshold
+    param dx_jump_thresh: norm_dx threshold
+    param dy_jump_thresh: norm_dy threshold
+    param dx_dev_thresh: norm_dx threshold
+    param dy_dev_thresh: norm_dy threshold
+    param local_window: window
+    param bad_pad: anomaly
+    return: anomalymask dict
     """
     dx = df["norm_dx"].astype(float)
     dy = df["norm_dy"].astype(float)
@@ -227,11 +227,11 @@ def fill_short_bad_runs(
     max_interp_gap: int
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    summary: 对短异常段做线性插值，对长异常段保留为空缺
-    param series: 原始一维数值序列
-    param bad_mask: 异常帧布尔掩码
-    param max_interp_gap: 允许插值的最大连续异常长度
-    return: 修复后序列、插值掩码、长空洞掩码、连续段长度数组
+    summary: anomaly, anomaly
+    param series: sequence
+    param bad_mask: anomaly mask
+    param max_interp_gap: maximum anomaly
+    return: sequence, mask, mask, array
     """
     values = series.astype(float).copy()
     interpolated_mask = np.zeros(len(values), dtype=bool)
@@ -272,11 +272,11 @@ def median_then_ema_on_segment(
     ema_alpha: float
 ) -> np.ndarray:
     """
-    summary: 对单个连续有效段先做中值滤波再做 EMA
-    param segment: 单段有效数据
-    param median_window: 中值滤波窗口
-    param ema_alpha: EMA 平滑系数
-    return: 平滑后的单段数据
+    summary: valid EMA
+    param segment: valid
+    param median_window: window
+    param ema_alpha: EMA smoothing
+    return: smoothing
     """
     seg = pd.Series(segment.astype(float))
 
@@ -295,11 +295,11 @@ def smooth_valid_segments(
     ema_alpha: float
 ) -> np.ndarray:
     """
-    summary: 仅对连续有效段分别做平滑
-    param values: 包含 NaN 的一维数值序列
-    param median_window: 中值滤波窗口
-    param ema_alpha: EMA 平滑系数
-    return: 分段平滑后的序列
+    summary: valid smoothing
+    param values: NaN sequence
+    param median_window: window
+    param ema_alpha: EMA smoothing
+    return: smoothing sequence
     """
     output = values.astype(float).copy()
     valid_mask = np.isfinite(output)
@@ -322,13 +322,13 @@ def build_clean_series(
     ema_alpha: float
 ) -> Dict[str, np.ndarray]:
     """
-    summary: 构建清洗后的 norm_dx、norm_dy、norm_radius
-    param df: 输入序列 DataFrame
-    param bad_mask: 逐帧异常掩码
-    param max_interp_gap: 允许插值的最大异常段长度
-    param median_window: 中值滤波窗口
-    param ema_alpha: EMA 平滑系数
-    return: 清洗结果字典
+    summary: norm_dx, norm_dy, norm_radius
+    param df: inputsequence DataFrame
+    param bad_mask: anomalymask
+    param max_interp_gap: maximumanomaly
+    param median_window: window
+    param ema_alpha: EMA smoothing
+    return: dict
     """
     dx_raw = df["norm_dx"].to_numpy(dtype=float)
     dy_raw = df["norm_dy"].to_numpy(dtype=float)
@@ -363,11 +363,11 @@ def append_clean_columns(
     cleaned: Dict[str, np.ndarray]
 ) -> pd.DataFrame:
     """
-    summary: 将异常检测与清洗结果追加到 DataFrame
-    param df: 原始 DataFrame
-    param detection: 异常检测结果字典
-    param cleaned: 清洗结果字典
-    return: 追加结果后的新 DataFrame
+    summary: anomaly DataFrame
+    param df: DataFrame
+    param detection: anomaly dict
+    param cleaned: dict
+    return: DataFrame
     """
     out = df.copy()
 
@@ -392,12 +392,12 @@ def append_clean_columns(
 
 def shade_gap_runs(ax: plt.Axes, gap_mask: np.ndarray, color: str = "red", alpha: float = 0.08) -> None:
     """
-    summary: 在图上用半透明色块标出长空洞区间
-    param ax: matplotlib 坐标轴
-    param gap_mask: 空洞掩码
-    param color: 颜色
-    param alpha: 透明度
-    return: 无
+    summary:
+    param ax: matplotlib
+    param gap_mask: mask
+    param color:
+    param alpha:
+    return: none
     """
     for start, end in find_runs(gap_mask):
         ax.axvspan(start, end, color=color, alpha=alpha)
@@ -409,11 +409,11 @@ def plot_sequence_comparison(
     save_path: str
 ) -> None:
     """
-    summary: 绘制 raw vs cleaned 对比图
-    param df: 包含清洗结果的 DataFrame
-    param seq_name: 序列名称
-    param save_path: 图片保存路径
-    return: 无
+    summary: raw vs cleaned
+    param df: DataFrame
+    param seq_name: sequence
+    param save_path: savepath
+    return: none
     """
     frame = df["frame"].to_numpy()
     core_bad = df["core_bad"].astype(bool).to_numpy()
@@ -467,11 +467,11 @@ def plot_sequence_comparison(
 
 def build_summary_row(seq_name: str, df: pd.DataFrame, source_csv_path: str) -> Dict[str, Any]:
     """
-    summary: 生成单个序列的摘要统计
-    param seq_name: 序列名称
-    param df: 包含清洗结果的 DataFrame
-    param source_csv_path: 原始 csv 路径
-    return: 摘要字典
+    summary: sequence
+    param seq_name: sequence
+    param df: DataFrame
+    param source_csv_path: csv path
+    return: dict
     """
     clean_valid = df["norm_dx_clean"].notna() & df["norm_dy_clean"].notna()
 
@@ -508,25 +508,25 @@ def process_one_sequence(
     ema_alpha: float
 ) -> Dict[str, Any]:
     """
-    summary: 处理单个序列 csv，输出 cleaned csv 与对比图
-    param seq_name: 序列名称
-    param csv_path: 输入 csv 路径
-    param cleaned_csv_dir: 清洗后 csv 目录
-    param plot_dir: 对比图目录
-    param radius_min: norm_radius 最小阈值
-    param radius_max: norm_radius 最大阈值
-    param area_ratio_min: pupil_iris_area_ratio 最小阈值
-    param area_ratio_max: pupil_iris_area_ratio 最大阈值
-    param dx_jump_thresh: norm_dx 单步跳变阈值
-    param dy_jump_thresh: norm_dy 单步跳变阈值
-    param dx_dev_thresh: norm_dx 局部偏差阈值
-    param dy_dev_thresh: norm_dy 局部偏差阈值
-    param local_window: 局部中位数窗口
-    param bad_pad: 异常向两侧扩张帧数
-    param max_interp_gap: 允许插值的最大异常段长度
-    param median_window: 中值滤波窗口
-    param ema_alpha: EMA 平滑系数
-    return: 单个序列的摘要统计
+    summary: process sequence csv, output cleaned csv
+    param seq_name: sequence
+    param csv_path: input csv path
+    param cleaned_csv_dir: csv directory
+    param plot_dir: directory
+    param radius_min: norm_radius minimumthreshold
+    param radius_max: norm_radius maximumthreshold
+    param area_ratio_min: pupil_iris_area_ratio minimumthreshold
+    param area_ratio_max: pupil_iris_area_ratio maximumthreshold
+    param dx_jump_thresh: norm_dx threshold
+    param dy_jump_thresh: norm_dy threshold
+    param dx_dev_thresh: norm_dx threshold
+    param dy_dev_thresh: norm_dy threshold
+    param local_window: window
+    param bad_pad: anomaly
+    param max_interp_gap: maximumanomaly
+    param median_window: window
+    param ema_alpha: EMA smoothing
+    return: sequence
     """
     df = load_sequence_csv(csv_path)
 
@@ -576,10 +576,10 @@ def process_one_sequence(
 
 def save_summary_csv(summary_rows: List[Dict[str, Any]], save_path: str) -> None:
     """
-    summary: 保存所有序列的摘要统计
-    param summary_rows: 摘要字典列表
-    param save_path: 输出 csv 路径
-    return: 无
+    summary: save sequence
+    param summary_rows: dictlist
+    param save_path: output csv path
+    return: none
     """
     df = pd.DataFrame(summary_rows)
     df.to_csv(save_path, index=False)
@@ -587,49 +587,49 @@ def save_summary_csv(summary_rows: List[Dict[str, Any]], save_path: str) -> None
 
 def parse_args() -> argparse.Namespace:
     """
-    summary: 解析命令行参数
-    param 无: 无
-    return: 参数对象
+    summary: parseCLIarguments
+    param none: none
+    return: arguments
     """
-    parser = argparse.ArgumentParser(description="对 sequence_outputs/S_x/geometry.csv 做异常处理、短段插值与分段滤波")
+    parser = argparse.ArgumentParser(description=" sequence_outputs/S_x/geometry.csv anomalyprocess, ")
 
-    parser.add_argument("--input", type=str, required=True, help="sequence_outputs 根目录、单个 S_x 目录或单个 geometry.csv")
-    parser.add_argument("--output_dir", type=str, required=True, help="输出目录")
-    parser.add_argument("--csv_name", type=str, default="geometry.csv", help="每个序列目录中的 csv 文件名")
+    parser.add_argument("--input", type=str, required=True, help="sequence_outputs directory, S_x directory geometry.csv")
+    parser.add_argument("--output_dir", type=str, required=True, help="outputdirectory")
+    parser.add_argument("--csv_name", type=str, default="geometry.csv", help=" sequencedirectory csv file ")
 
-    parser.add_argument("--radius_min", type=float, default=0.0, help="norm_radius 最小阈值")
-    parser.add_argument("--radius_max", type=float, default=0.8, help="norm_radius 最大阈值")
+    parser.add_argument("--radius_min", type=float, default=0.0, help="norm_radius minimumthreshold")
+    parser.add_argument("--radius_max", type=float, default=0.8, help="norm_radius maximumthreshold")
 
-    parser.add_argument("--area_ratio_min", type=float, default=0.02, help="面积比最小阈值")
-    parser.add_argument("--area_ratio_max", type=float, default=0.20, help="面积比最大阈值")
+    parser.add_argument("--area_ratio_min", type=float, default=0.02, help=" minimumthreshold")
+    parser.add_argument("--area_ratio_max", type=float, default=0.20, help=" maximumthreshold")
 
-    parser.add_argument("--dx_jump_thresh", type=float, default=0.025, help="norm_dx 单步跳变阈值")
-    parser.add_argument("--dy_jump_thresh", type=float, default=0.18, help="norm_dy 单步跳变阈值")
+    parser.add_argument("--dx_jump_thresh", type=float, default=0.025, help="norm_dx threshold")
+    parser.add_argument("--dy_jump_thresh", type=float, default=0.18, help="norm_dy threshold")
 
-    parser.add_argument("--dx_dev_thresh", type=float, default=0.025, help="norm_dx 局部偏差阈值")
-    parser.add_argument("--dy_dev_thresh", type=float, default=0.18, help="norm_dy 局部偏差阈值")
+    parser.add_argument("--dx_dev_thresh", type=float, default=0.025, help="norm_dx threshold")
+    parser.add_argument("--dy_dev_thresh", type=float, default=0.18, help="norm_dy threshold")
 
-    parser.add_argument("--local_window", type=int, default=7, help="局部中位数窗口")
-    parser.add_argument("--bad_pad", type=int, default=1, help="核心异常向两侧扩张的帧数")
+    parser.add_argument("--local_window", type=int, default=7, help=" window")
+    parser.add_argument("--bad_pad", type=int, default=1, help=" anomaly ")
 
-    parser.add_argument("--max_interp_gap", type=int, default=2, help="允许插值的最大异常段长度")
-    parser.add_argument("--median_window", type=int, default=5, help="中值滤波窗口")
-    parser.add_argument("--ema_alpha", type=float, default=0.35, help="EMA 平滑系数")
+    parser.add_argument("--max_interp_gap", type=int, default=2, help=" maximumanomaly ")
+    parser.add_argument("--median_window", type=int, default=5, help=" window")
+    parser.add_argument("--ema_alpha", type=float, default=0.35, help="EMA smoothing ")
 
     return parser.parse_args()
 
 
 def main() -> None:
     """
-    summary: 主函数，批量处理 sequence_outputs 结构下的序列 csv
-    param 无: 无
-    return: 无
+    summary: main function, batchprocess sequence_outputs sequence csv
+    param none: none
+    return: none
     """
     args = parse_args()
 
     seq_items = discover_sequence_csvs(args.input, csv_name=args.csv_name)
     if len(seq_items) == 0:
-        raise RuntimeError("没有找到任何 geometry.csv。")
+        raise RuntimeError("No geometry.csv files were found.")
 
     cleaned_csv_dir = os.path.join(args.output_dir, "cleaned_csv")
     plot_dir = os.path.join(args.output_dir, "plots")
@@ -663,9 +663,9 @@ def main() -> None:
     summary_csv_path = os.path.join(args.output_dir, "summary.csv")
     save_summary_csv(summary_rows, summary_csv_path)
 
-    print("\n处理完成。")
-    print(f"cleaned_csv 目录: {cleaned_csv_dir}")
-    print(f"plots 目录: {plot_dir}")
+    print("\nProcessing completed.")
+    print(f"cleaned_csv directory: {cleaned_csv_dir}")
+    print(f"plots directory: {plot_dir}")
     print(f"summary.csv: {summary_csv_path}")
 
 

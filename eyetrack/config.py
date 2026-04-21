@@ -34,18 +34,18 @@ def build_model_metadata(
     qat_backend: str = DEFAULT_QAT_BACKEND,
 ) -> Dict[str, Any]:
     """
-    summary: 构建模型配置元数据，便于 checkpoint 与导出流程复用
-    param in_channels: 输入通道数
-    param num_classes: 输出类别数
-    param base_channels: U-Net 基础通道数
-    param input_width: 模型输入宽度
-    param input_height: 模型输入高度
-    param preprocess_mode: 预处理模式
-    param amp: 是否使用 AMP 作为训练基线
-    param use_mask: 训练时是否读取 mask
-    param quantization_mode: 量化模式标记，默认 fp32
-    param qat_backend: QAT backend，默认 qnnpack
-    return: 元数据字典
+    summary: model, checkpoint
+    param in_channels: input
+    param num_classes: outputclass
+    param base_channels: U-Net
+    param input_width: modelinput
+    param input_height: modelinput
+    param preprocess_mode: process
+    param amp: AMP trainingbaseline
+    param use_mask: training read mask
+    param quantization_mode: quantization, default fp32
+    param qat_backend: QAT backend, default qnnpack
+    return: dict
     """
     return {
         "in_channels": in_channels,

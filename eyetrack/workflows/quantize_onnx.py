@@ -21,7 +21,7 @@ def parse_quant_enum(enum_cls, value: str):
         if candidate.upper() == name:
             return getattr(enum_cls, candidate)
     valid = [candidate for candidate in dir(enum_cls) if not candidate.startswith("_")]
-    raise ValueError(f"不支持的量化选项: {value}，可选值: {valid}")
+    raise ValueError(f"unsupported quantization: {value}, optional: {valid}")
 
 
 def is_histogram_calibration_method(calibration_method: str) -> bool:
@@ -59,16 +59,16 @@ def build_quantize_static_extra_options(
     calibration_stride: int | None,
 ) -> dict[str, Any]:
     """
-    summary: 构造 ORT 静态量化 extra_options
-    param reader: 校准 reader
-    param calibration_method: 校准方法
-    param calibration_stride: 分段校准 stride
-    return: extra_options 字典
+    summary: ORT quantization extra_options
+    param reader: calibration reader
+    param calibration_method: calibration
+    param calibration_stride: calibration stride
+    return: extra_options dict
     """
     effective_stride = resolve_effective_calibration_stride(reader=reader, calibration_stride=calibration_stride)
     extra_options: dict[str, Any] = {}
     if effective_stride is not None:
-        # ORT 1.24.x 会在 calibration 阶段按该 stride 多次调用 reader，可显著降低峰值内存。
+        # ORT 1.24.x calibration stride reader,.
         extra_options["CalibStridedMinMax"] = effective_stride
     return extra_options
 
@@ -139,31 +139,31 @@ def quantize_onnx_model(
     max_dice_loss: float = 0.03,
 ) -> None:
     """
-    summary: 对 ONNX 模型执行静态 PTQ，并可选自动回退到 U8U8
-    param model_path: 浮点 ONNX 模型路径
-    param calibration_root: OpenEDS 风格校准数据根目录
-    param output_path: INT8 ONNX 输出路径
-    param split: 校准数据划分
-    param input_width: 模型输入宽度
-    param input_height: 模型输入高度
-    param quant_format: 量化格式
-    param activation_type: 激活量化类型
-    param weight_type: 权重量化类型
-    param calibration_method: 校准方法
-    param calibration_limit: 校准样本上限
-    param calibration_stride: 分段校准 stride，1 表示逐样本校准以降低内存
-    param per_channel: 是否启用 per-channel
-    param auto_fallback_to_minmax_on_oom: 若 histogram 校准 OOM，是否自动回退到 MinMax
-    param oom_fallback_calibration_limit: OOM 回退时使用的校准样本上限
-    param auto_fallback_to_u8u8: 是否自动回退到 U8U8
-    param fallback_output_path: 回退模型输出路径
-    param validation_root: 用于自动回退判断的验证集根目录
-    param validation_split: 验证数据划分
-    param max_dice_loss: 最大可接受 Dice 损失
-    return: 无
+    summary: ONNX model PTQ, optional fallback U8U8
+    param model_path: ONNX modelpath
+    param calibration_root: OpenEDS calibration directory
+    param output_path: INT8 ONNX outputpath
+    param split: calibration
+    param input_width: modelinput
+    param input_height: modelinput
+    param quant_format: quantization
+    param activation_type: quantization
+    param weight_type: quantization
+    param calibration_method: calibration
+    param calibration_limit: calibrationsample
+    param calibration_stride: calibration stride, 1 samplecalibration
+    param per_channel: enable per-channel
+    param auto_fallback_to_minmax_on_oom: histogram calibration OOM, fallback MinMax
+    param oom_fallback_calibration_limit: OOM fallback calibrationsample
+    param auto_fallback_to_u8u8: fallback U8U8
+    param fallback_output_path: fallbackmodeloutputpath
+    param validation_root: fallback validation directory
+    param validation_split: validation
+    param max_dice_loss: maximum Dice
+    return: none
     """
     if calibration_root is None:
-        raise ValueError("必须提供 --calibration_root，用于静态 PTQ 校准。")
+        raise ValueError("--calibration_root is required for static PTQ calibration.")
 
     require_onnxruntime()
     quantization = require_onnxruntime_quantization()
@@ -186,7 +186,7 @@ def quantize_onnx_model(
     )
     if extra_options.get("CalibStridedMinMax") is not None:
         print(
-            "校准将采用分段执行以降低峰值内存: "
+            "calibration: "
             f"method={calibration_method} stride={extra_options['CalibStridedMinMax']} samples={len(reader)}"
         )
 
@@ -216,8 +216,8 @@ def quantize_onnx_model(
         ):
             fallback_limit = min(calibration_limit, oom_fallback_calibration_limit)
             print(
-                "检测到 histogram 校准阶段内存不足，"
-                f"将自动回退到 MinMax，并把校准样本数限制为 {fallback_limit}。"
+                " histogram calibration, "
+                f" fallback MinMax, calibrationsample {fallback_limit}."
             )
             reader = build_calibration_reader(
                 calibration_root=calibration_root,
@@ -246,18 +246,18 @@ def quantize_onnx_model(
             )
             effective_calibration_method = "minmax"
             effective_extra_options = fallback_extra_options
-            print("已完成 MinMax OOM fallback 量化。")
+            print("Completed MinMax OOM fallback quantization.")
         else:
             if is_histogram_calibration_method(calibration_method) and is_probable_calibration_oom(exc):
                 raise RuntimeError(
-                    "当前校准配置触发了 ONNX Runtime histogram 校准器的内存问题。"
-                    "建议优先保留 --calibration_stride 1；"
-                    "若仍失败，再把 --calibration_limit 降到 16 或 32；"
-                    "或者直接改用 --calibration_method minmax；"
-                    "或者直接加 --auto_fallback_to_minmax_on_oom。"
+                    "currentcalibration ONNX Runtime histogram calibration."
+                    " --calibration_stride 1; "
+                    ", --calibration_limit 16 32; "
+                    " --calibration_method minmax; "
+                    " --auto_fallback_to_minmax_on_oom."
                 ) from exc
             raise
-    print(f"已生成量化模型: {output_model_path}")
+    print(f" quantizationmodel: {output_model_path}")
 
     if not auto_fallback_to_u8u8 or validation_root is None:
         return
@@ -288,7 +288,7 @@ def quantize_onnx_model(
     print(f"mean foreground dice loss: {dice_loss:.6f}")
 
     if dice_loss <= max_dice_loss:
-        print("量化结果满足精度阈值，无需执行 U8U8 fallback。")
+        print("quantization threshold, none U8U8 fallback.")
         return
 
     fallback_path = fallback_output_path
@@ -307,49 +307,49 @@ def quantize_onnx_model(
         calibrate_method=parse_quant_enum(quantization.CalibrationMethod, effective_calibration_method),
         extra_options=effective_extra_options,
     )
-    print(f"QInt8 结果超出阈值，已生成 U8U8 fallback 模型: {fallback_path}")
+    print(f"QInt8 threshold, U8U8 fallback model: {fallback_path}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="对 ONNX 模型执行静态 PTQ 量化")
-    parser.add_argument("--model_path", type=str, default=DEFAULT_ONNX_PATH, help="浮点 ONNX 模型路径")
-    parser.add_argument("--calibration_root", type=str, required=True, help="OpenEDS 风格校准数据根目录")
-    parser.add_argument("--output_path", type=str, default=DEFAULT_INT8_ONNX_PATH, help="INT8 ONNX 输出路径")
-    parser.add_argument("--split", type=str, default="train", help="校准数据划分")
-    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="模型输入宽度")
-    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="模型输入高度")
-    parser.add_argument("--quant_format", type=str, default="qdq", help="量化格式，默认 qdq")
-    parser.add_argument("--activation_type", type=str, default="qint8", help="激活量化类型")
-    parser.add_argument("--weight_type", type=str, default="qint8", help="权重量化类型")
-    parser.add_argument("--calibration_method", type=str, default="percentile", help="校准方法")
-    parser.add_argument("--calibration_limit", type=int, default=256, help="用于校准的最大图像数")
+    parser = argparse.ArgumentParser(description=" ONNX model PTQ quantization")
+    parser.add_argument("--model_path", type=str, default=DEFAULT_ONNX_PATH, help=" ONNX modelpath")
+    parser.add_argument("--calibration_root", type=str, required=True, help="OpenEDS calibration directory")
+    parser.add_argument("--output_path", type=str, default=DEFAULT_INT8_ONNX_PATH, help="INT8 ONNX outputpath")
+    parser.add_argument("--split", type=str, default="train", help="calibration ")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="modelinput ")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="modelinput ")
+    parser.add_argument("--quant_format", type=str, default="qdq", help="quantization, default qdq")
+    parser.add_argument("--activation_type", type=str, default="qint8", help=" quantization ")
+    parser.add_argument("--weight_type", type=str, default="qint8", help=" quantization ")
+    parser.add_argument("--calibration_method", type=str, default="percentile", help="calibration ")
+    parser.add_argument("--calibration_limit", type=int, default=256, help=" calibration maximumimage ")
     parser.add_argument(
         "--calibration_stride",
         type=int,
         default=1,
-        help="分段校准 stride；1 表示逐样本校准，最省内存；<=0 表示关闭分段",
+        help=" calibration stride; 1 samplecalibration, ; <=0 ",
     )
-    parser.add_argument("--per_channel", action="store_true", default=True, help="启用 per-channel 权重量化")
-    parser.add_argument("--no-per_channel", action="store_false", dest="per_channel", help="禁用 per-channel 权重量化")
+    parser.add_argument("--per_channel", action="store_true", default=True, help="enable per-channel quantization")
+    parser.add_argument("--no-per_channel", action="store_false", dest="per_channel", help="disable per-channel quantization")
     parser.add_argument(
         "--auto_fallback_to_minmax_on_oom",
         action="store_true",
         dest="auto_fallback_to_minmax_on_oom",
-        help="Histogram 校准 OOM 时自动回退到 MinMax",
+        help="Histogram calibration OOM fallback MinMax",
     )
     parser.add_argument(
         "--no-auto_fallback_to_minmax_on_oom",
         action="store_false",
         dest="auto_fallback_to_minmax_on_oom",
-        help="禁用 Histogram 校准 OOM 时的自动 MinMax 回退",
+        help="disable Histogram calibration OOM MinMax fallback",
     )
     parser.set_defaults(auto_fallback_to_minmax_on_oom=True)
-    parser.add_argument("--oom_fallback_calibration_limit", type=int, default=32, help="OOM 回退到 MinMax 时使用的校准样本上限")
-    parser.add_argument("--auto_fallback_to_u8u8", action="store_true", help="若精度下降过大则自动回退到 U8U8")
-    parser.add_argument("--fallback_output_path", type=str, default=None, help="U8U8 fallback 输出路径")
-    parser.add_argument("--validation_root", type=str, default=None, help="用于自动回退判断的验证集根目录")
-    parser.add_argument("--validation_split", type=str, default="validation", help="验证数据划分")
-    parser.add_argument("--max_dice_loss", type=float, default=0.03, help="最大可接受平均前景 Dice 损失")
+    parser.add_argument("--oom_fallback_calibration_limit", type=int, default=32, help="OOM fallback MinMax calibrationsample ")
+    parser.add_argument("--auto_fallback_to_u8u8", action="store_true", help=" fallback U8U8")
+    parser.add_argument("--fallback_output_path", type=str, default=None, help="U8U8 fallback outputpath")
+    parser.add_argument("--validation_root", type=str, default=None, help=" fallback validation directory")
+    parser.add_argument("--validation_split", type=str, default="validation", help="validation ")
+    parser.add_argument("--max_dice_loss", type=float, default=0.03, help="maximum Dice ")
     return parser.parse_args()
 
 

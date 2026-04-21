@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -5,12 +6,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
+from eyetrack.paths import resolve_openeds_sample_paths
+
 
 def load_data_by_suffix(file_path: str) -> Any:
     """
-    summary: 根据文件后缀自动选择合适的读取方式
-    param file_path: 文件路径，支持 png/jpg/jpeg/bmp/tif/tiff/npy
-    return: 读取后的对象，通常为 numpy 数组
+    summary: file read
+    param file_path: filepath, supports png/jpg/jpeg/bmp/tif/tiff/npy
+    return: read, numpy array
     """
     suffix = Path(file_path).suffix.lower()
 
@@ -20,20 +23,20 @@ def load_data_by_suffix(file_path: str) -> Any:
     if suffix == ".npy":
         return np.load(file_path, allow_pickle=True)
 
-    raise ValueError(f"不支持的文件类型: {suffix} -> {file_path}")
+    raise ValueError(f"unsupported file: {suffix} -> {file_path}")
 
 
 def print_basic_info(name: str, data: Any, file_path: str) -> None:
     """
-    summary: 打印数据的基础信息
-    param name: 数据名称，如 image/label/mask
-    param data: 已加载的数据对象
-    param file_path: 原始文件路径
-    return: 无
+    summary:
+    param name:, image/label/mask
+    param data:
+    param file_path: filepath
+    return: none
     """
     print(f"\n===== {name} =====")
-    print(f"[路径] {file_path}")
-    print(f"[类型] {type(data)}")
+    print(f"[path] {file_path}")
+    print(f"[ ] {type(data)}")
 
     if isinstance(data, np.ndarray):
         print(f"[shape] {data.shape}")
@@ -44,21 +47,21 @@ def print_basic_info(name: str, data: Any, file_path: str) -> None:
             print(f"[max] {data.max()}")
 
             unique_vals = np.unique(data)
-            print(f"[unique前20个] {unique_vals[:20]}")
-            print(f"[unique总数] {len(unique_vals)}")
-            print(f"[非零像素数] {np.count_nonzero(data)}")
+            print(f"[unique 20 ] {unique_vals[:20]}")
+            print(f"[unique ] {len(unique_vals)}")
+            print(f"[ ] {np.count_nonzero(data)}")
         else:
-            print("[提示] 该数组不是数值型，无法统计 min/max/unique。")
+            print("[ ] array, unable to min/max/unique.")
     else:
-        print("[内容预览]")
+        print("[ ]")
         print(data)
 
 
 def normalize_for_display(data: np.ndarray) -> np.ndarray:
     """
-    summary: 将数据处理为适合 matplotlib 显示的形式
-    param data: 输入数组
-    return: 可显示数组
+    summary: process matplotlib
+    param data: inputarray
+    return: array
     """
     if not isinstance(data, np.ndarray):
         return data
@@ -76,11 +79,11 @@ def normalize_for_display(data: np.ndarray) -> np.ndarray:
 
 def show_triplet(image_data: Any, label_data: Any, mask_data: Any) -> None:
     """
-    summary: 将 image、label、mask 并排显示
-    param image_data: 图像数据
-    param label_data: 标签数据
-    param mask_data: 掩码数据
-    return: 无
+    summary: image, label, mask
+    param image_data: image
+    param label_data: label
+    param mask_data: mask
+    return: none
     """
     plt.figure(figsize=(15, 5))
 
@@ -119,11 +122,11 @@ def show_triplet(image_data: Any, label_data: Any, mask_data: Any) -> None:
 
 def inspect_sample(image_path: str, label_path: str, mask_path: str) -> None:
     """
-    summary: 检查一组 image/label/mask 样本并可视化
-    param image_path: 图像路径
-    param label_path: 标签路径
-    param mask_path: 掩码路径
-    return: 无
+    summary: image/label/mask sample
+    param image_path: imagepath
+    param label_path: labelpath
+    param mask_path: maskpath
+    return: none
     """
     image_data = load_data_by_suffix(image_path)
     label_data = load_data_by_suffix(label_path)
@@ -136,12 +139,33 @@ def inspect_sample(image_path: str, label_path: str, mask_path: str) -> None:
     show_triplet(image_data, label_data, mask_data)
 
 
-def main() -> None:
-    image_path = r"D:\Code\DataSet\OpenEDS\openEDS\openEDS\train\images\000000.png"
-    label_path = r"D:\Code\DataSet\OpenEDS\openEDS\openEDS\train\labels\000000.npy"
-    mask_path = r"D:\Code\DataSet\OpenEDS\openEDS\openEDS\train\masks\000000.png"
+def parse_args() -> argparse.Namespace:
+    """
+    summary: parse sample inspection arguments
+    param none: none
+    return: arguments
+    """
+    parser = argparse.ArgumentParser(description="Inspect one OpenEDS sample")
+    parser.add_argument("--root_dir", type=str, default=None, help="OpenEDS dataset root directory")
+    parser.add_argument("--split", type=str, default="train", help="dataset split, default train")
+    parser.add_argument("--sample_id", type=str, default="000000", help="sample id without suffix")
+    return parser.parse_args()
 
-    inspect_sample(image_path, label_path, mask_path)
+
+def main() -> None:
+    """
+    summary: inspect one sample
+    param none: none
+    return: none
+    """
+    args = parse_args()
+    image_path, label_path, mask_path = resolve_openeds_sample_paths(
+        root_dir=args.root_dir,
+        split=args.split,
+        sample_id=args.sample_id,
+    )
+
+    inspect_sample(str(image_path), str(label_path), str(mask_path))
 
 
 if __name__ == "__main__":

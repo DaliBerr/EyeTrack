@@ -15,18 +15,18 @@ VALID_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 def ensure_dir(path: Path) -> None:
     """
-    summary: 确保目录存在
-    param path: 目录路径
-    return: 无
+    summary: directory
+    param path: directorypath
+    return: none
     """
     path.mkdir(parents=True, exist_ok=True)
 
 
 def natural_key(text: str) -> list[object]:
     """
-    summary: 生成自然排序键
-    param text: 输入字符串
-    return: 排序键列表
+    summary:
+    param text: input
+    return: list
     """
     import re
 
@@ -35,22 +35,22 @@ def natural_key(text: str) -> list[object]:
 
 def parse_splits(text: str) -> list[str]:
     """
-    summary: 解析逗号分隔的 split 列表
-    param text: 逗号分隔字符串
-    return: split 名称列表
+    summary: parse split list
+    param text:
+    return: split list
     """
     splits = [item.strip() for item in text.split(",") if item.strip()]
     if len(splits) == 0:
-        raise ValueError("至少需要提供一个 split。")
+        raise ValueError("At least one split must be provided.")
     return splits
 
 
 def iter_files(folder: Path, suffixes: Iterable[str]) -> list[Path]:
     """
-    summary: 列出目录中指定后缀的文件并做自然排序
-    param folder: 输入目录
-    param suffixes: 允许的后缀集合
-    return: 文件路径列表
+    summary: directory file
+    param folder: inputdirectory
+    param suffixes:
+    return: filepathlist
     """
     items = [path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in suffixes]
     items.sort(key=lambda path: natural_key(path.name))
@@ -59,10 +59,10 @@ def iter_files(folder: Path, suffixes: Iterable[str]) -> list[Path]:
 
 def save_gray_image(image: np.ndarray, save_path: Path) -> None:
     """
-    summary: 保存 uint8 灰度图
-    param image: 灰度图
-    param save_path: 输出路径
-    return: 无
+    summary: save uint8
+    param image:
+    param save_path: outputpath
+    return: none
     """
     image_uint8 = np.clip(image * 255.0, 0, 255).astype(np.uint8)
     Image.fromarray(image_uint8, mode="L").save(save_path)
@@ -70,10 +70,10 @@ def save_gray_image(image: np.ndarray, save_path: Path) -> None:
 
 def save_binary_mask(mask: np.ndarray, save_path: Path) -> None:
     """
-    summary: 保存二值 mask 到 png
-    param mask: 二值 mask
-    param save_path: 输出路径
-    return: 无
+    summary: save mask png
+    param mask: mask
+    param save_path: outputpath
+    return: none
     """
     mask_uint8 = (mask > 0).astype(np.uint8) * 255
     Image.fromarray(mask_uint8, mode="L").save(save_path)
@@ -87,13 +87,13 @@ def preprocess_image_dir(
     skip_existing: bool,
 ) -> int:
     """
-    summary: 预处理 images 目录
-    param source_dir: 输入 images 目录
-    param target_dir: 输出 images 目录
-    param input_width: 目标宽度
-    param input_height: 目标高度
-    param skip_existing: 是否跳过已存在文件
-    return: 处理数量
+    summary: process images directory
+    param source_dir: input images directory
+    param target_dir: output images directory
+    param input_width:
+    param input_height:
+    param skip_existing: file
+    return: processcount
     """
     ensure_dir(target_dir)
     count = 0
@@ -119,13 +119,13 @@ def preprocess_label_dir(
     skip_existing: bool,
 ) -> int:
     """
-    summary: 预处理 labels 目录
-    param source_dir: 输入 labels 目录
-    param target_dir: 输出 labels 目录
-    param input_width: 目标宽度
-    param input_height: 目标高度
-    param skip_existing: 是否跳过已存在文件
-    return: 处理数量
+    summary: process labels directory
+    param source_dir: input labels directory
+    param target_dir: output labels directory
+    param input_width:
+    param input_height:
+    param skip_existing: file
+    return: processcount
     """
     ensure_dir(target_dir)
     count = 0
@@ -151,13 +151,13 @@ def preprocess_mask_dir(
     skip_existing: bool,
 ) -> int:
     """
-    summary: 预处理 masks 目录
-    param source_dir: 输入 masks 目录
-    param target_dir: 输出 masks 目录
-    param input_width: 目标宽度
-    param input_height: 目标高度
-    param skip_existing: 是否跳过已存在文件
-    return: 处理数量
+    summary: process masks directory
+    param source_dir: input masks directory
+    param target_dir: output masks directory
+    param input_width:
+    param input_height:
+    param skip_existing: file
+    return: processcount
     """
     ensure_dir(target_dir)
     count = 0
@@ -185,21 +185,21 @@ def preprocess_openeds_dataset(
     process_mask: bool = True,
 ) -> None:
     """
-    summary: 将 OpenEDS 风格数据集离线缩放到固定尺寸
-    param input_root: 原始数据集根目录
-    param output_root: 输出数据集根目录
-    param splits: 待处理 split 列表
-    param input_width: 目标宽度
-    param input_height: 目标高度
-    param skip_existing: 是否跳过已存在文件
-    param process_mask: 是否处理 mask 目录
-    return: 无
+    summary: OpenEDS dataset
+    param input_root: dataset directory
+    param output_root: outputdataset directory
+    param splits: process split list
+    param input_width:
+    param input_height:
+    param skip_existing: file
+    param process_mask: process mask directory
+    return: none
     """
     source_root = Path(input_root)
     target_root = Path(output_root)
 
     if not source_root.exists():
-        raise FileNotFoundError(f"找不到输入数据集根目录: {source_root}")
+        raise FileNotFoundError(f"not foundinputdataset directory: {source_root}")
 
     ensure_dir(target_root)
 
@@ -208,16 +208,16 @@ def preprocess_openeds_dataset(
         split_target_dir = target_root / split
 
         if not split_source_dir.exists():
-            raise FileNotFoundError(f"找不到 split 目录: {split_source_dir}")
+            raise FileNotFoundError(f"not found split directory: {split_source_dir}")
 
         image_source_dir = split_source_dir / "images"
         label_source_dir = split_source_dir / "labels"
         mask_source_dir = split_source_dir / "masks"
 
         if not image_source_dir.exists():
-            raise FileNotFoundError(f"找不到 images 目录: {image_source_dir}")
+            raise FileNotFoundError(f"not found images directory: {image_source_dir}")
 
-        print(f"\n处理 split: {split}")
+        print(f"\nprocess split: {split}")
         print(f"source: {split_source_dir}")
         print(f"target: {split_target_dir}")
 
@@ -228,7 +228,7 @@ def preprocess_openeds_dataset(
             input_height=input_height,
             skip_existing=skip_existing,
         )
-        print(f"images 已处理: {image_count}")
+        print(f"images process: {image_count}")
 
         if label_source_dir.exists():
             label_count = preprocess_label_dir(
@@ -238,7 +238,7 @@ def preprocess_openeds_dataset(
                 input_height=input_height,
                 skip_existing=skip_existing,
             )
-            print(f"labels 已处理: {label_count}")
+            print(f"labels process: {label_count}")
 
         if process_mask and mask_source_dir.exists():
             mask_count = preprocess_mask_dir(
@@ -248,38 +248,38 @@ def preprocess_openeds_dataset(
                 input_height=input_height,
                 skip_existing=skip_existing,
             )
-            print(f"masks 已处理: {mask_count}")
+            print(f"masks process: {mask_count}")
         elif process_mask:
-            print("masks 目录不存在，已跳过。")
+            print("masks directory,.")
         else:
-            print("按配置跳过 masks 处理。")
+            print(" masks process.")
 
-    print(f"\n完成。预处理数据集已输出到: {target_root}")
+    print(f"\ncompleted. processdataset output: {target_root}")
 
 
 def parse_args() -> argparse.Namespace:
     """
-    summary: 解析命令行参数
-    param 无: 无
-    return: 参数对象
+    summary: parseCLIarguments
+    param none: none
+    return: arguments
     """
-    parser = argparse.ArgumentParser(description="将 OpenEDS 风格数据集离线缩放到固定尺寸")
-    parser.add_argument("--input_root", type=str, required=True, help="原始数据集根目录")
-    parser.add_argument("--output_root", type=str, required=True, help="输出数据集根目录")
-    parser.add_argument("--splits", type=str, default="train,validation", help="待处理 split，逗号分隔")
-    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="目标宽度")
-    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="目标高度")
-    parser.add_argument("--process_mask", action="store_true", default=True, help="处理 masks 目录")
-    parser.add_argument("--no-process_mask", action="store_false", dest="process_mask", help="跳过 masks 目录")
-    parser.add_argument("--overwrite_existing", action="store_true", help="若输出已存在则覆盖重算")
+    parser = argparse.ArgumentParser(description=" OpenEDS dataset ")
+    parser.add_argument("--input_root", type=str, required=True, help=" dataset directory")
+    parser.add_argument("--output_root", type=str, required=True, help="outputdataset directory")
+    parser.add_argument("--splits", type=str, default="train,validation", help=" process split, ")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help=" ")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help=" ")
+    parser.add_argument("--process_mask", action="store_true", default=True, help="process masks directory")
+    parser.add_argument("--no-process_mask", action="store_false", dest="process_mask", help=" masks directory")
+    parser.add_argument("--overwrite_existing", action="store_true", help=" output ")
     return parser.parse_args()
 
 
 def main() -> None:
     """
-    summary: 主函数
-    param 无: 无
-    return: 无
+    summary: main function
+    param none: none
+    return: none
     """
     args = parse_args()
     preprocess_openeds_dataset(

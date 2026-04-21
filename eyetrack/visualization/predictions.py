@@ -11,9 +11,9 @@ from eyetrack.runtime import autocast_context
 
 def colorize_label_map(label_map: np.ndarray) -> np.ndarray:
     """
-    summary: 将类别标签图转为彩色可视化图
-    param label_map: 二维类别标签图
-    return: 三通道彩色图
+    summary: classlabel
+    param label_map: classlabel
+    return:
     """
     color_table = np.array([
         [0, 0, 0],
@@ -32,11 +32,11 @@ def build_error_map(
     mask: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
-    summary: 构建误差图，正确为黑，错误为白
-    param pred: 预测标签图
-    param target: 真值标签图
-    param mask: 可选有效区域 mask
-    return: 二维误差图
+    summary:,,
+    param pred: predictionlabel
+    param target: label
+    param mask: optionalvalid mask
+    return:
     """
     error = (pred != target).astype(np.uint8)
 
@@ -56,13 +56,13 @@ def visualize_predictions(
     use_amp: bool = False,
 ) -> None:
     """
-    summary: 保存验证集预测可视化结果
-    param model: 已训练模型
-    param dataloader: 验证集 DataLoader
-    param device: 当前设备
-    param save_dir: 可视化结果保存目录
-    param num_samples: 最多保存多少个样本
-    return: 无
+    summary: savevalidation prediction
+    param model: trainingmodel
+    param dataloader: validation DataLoader
+    param device: current
+    param save_dir: savedirectory
+    param num_samples: save sample
+    return: none
     """
     os.makedirs(save_dir, exist_ok=True)
     model.eval()
@@ -137,10 +137,10 @@ def visualize_predictions(
             plt.close(fig)
 
             saved_count += 1
-            print(f"已保存可视化: {save_path}")
+            print(f"Saved visualization: {save_path}")
 
             if saved_count >= num_samples:
-                print(f"可视化完成，共保存 {saved_count} 张。")
+                print(f"Visualization finished, total saved {saved_count}.")
                 return
 
-    print(f"可视化完成，共保存 {saved_count} 张。")
+    print(f"Visualization finished, total saved {saved_count}.")

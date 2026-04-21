@@ -15,7 +15,7 @@ def require_gstreamer():
         from gi.repository import GLib, Gst, GstRtspServer
     except ImportError as exc:
         raise RuntimeError(
-            "缺少 GStreamer Python 绑定。请在树莓派上安装 python3-gi、gir1.2-gst-rtsp-server-1.0 与相关 gstreamer 插件。"
+            "Missing GStreamer Python bindings. Install python3-gi, gir1.2-gst-rtsp-server-1.0, and related gstreamer plugins on Raspberry Pi."
         ) from exc
 
     Gst.init(None)
@@ -30,7 +30,7 @@ def resolve_h264_encoder_name(Gst, allow_software_fallback: bool = True) -> str:
     for encoder_name in encoder_candidates:
         if Gst.ElementFactory.find(encoder_name) is not None:
             return encoder_name
-    raise RuntimeError("未找到可用的 H.264 编码器，请安装对应的 GStreamer encoder 插件。")
+    raise RuntimeError("No available H.264 encoder found. Install the required GStreamer encoder plugins.")
 
 
 def build_h264_encoder_fragment(encoder_name: str, fps: int, bitrate_kbps: int) -> str:
@@ -104,7 +104,7 @@ class RtspVideoServer:
         element = media.get_element()
         appsrc = element.get_child_by_name("src")
         if appsrc is None:
-            raise RuntimeError("RTSP pipeline 中未找到 appsrc。")
+            raise RuntimeError("appsrc was not found in the RTSP pipeline.")
         appsrc.set_property("format", self.Gst.Format.TIME)
         appsrc.set_property("is-live", True)
         appsrc.set_property("block", False)
@@ -130,7 +130,7 @@ class RtspVideoServer:
             return False
         if frame_bgr.shape[:2] != (self.height, self.width):
             raise ValueError(
-                f"RTSP 输出帧尺寸不匹配，期望 {(self.height, self.width)}，实际 {frame_bgr.shape[:2]}"
+                f"RTSP output, {(self.height, self.width)}, {frame_bgr.shape[:2]}"
             )
 
         with self._push_lock:

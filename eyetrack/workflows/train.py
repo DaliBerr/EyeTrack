@@ -33,9 +33,9 @@ from eyetrack.runtime import resolve_device, should_enable_amp
 
 def set_seed(seed: int = 42) -> None:
     """
-    summary: 固定随机种子以保证结果可复现
-    param seed: 随机种子
-    return: 无
+    summary:
+    param seed:
+    return: none
     """
     random.seed(seed)
     np.random.seed(seed)
@@ -45,11 +45,11 @@ def set_seed(seed: int = 42) -> None:
 
 def print_metrics(epoch: int, train_metrics: Dict[str, float], val_metrics: Dict[str, float]) -> None:
     """
-    summary: 打印训练与验证指标
-    param epoch: 当前轮数
-    param train_metrics: 训练指标
-    param val_metrics: 验证指标
-    return: 无
+    summary: training validation
+    param epoch: current
+    param train_metrics: training
+    param val_metrics: validation
+    return: none
     """
     def render_metric(value: float) -> str:
         if math.isnan(value):
@@ -99,28 +99,28 @@ def run_training(
     qat_freeze_bn_after_epoch: int = 2,
 ) -> None:
     """
-    summary: 训练 OpenEDS 分割模型并支持 AMP 与轻量配置
-    param root_dir: 数据集根目录
-    param batch_size: 批大小
-    param num_epochs: 训练轮数
-    param learning_rate: 学习率
-    param num_workers: DataLoader 进程数
-    param save_checkpoint_path: checkpoint 保存路径
-    param resume_checkpoint_path: 可选续训 checkpoint
-    param in_channels: 输入通道数
-    param num_classes: 类别数量
-    param base_channels: U-Net 基础通道数
-    param input_width: 模型输入宽度
-    param input_height: 模型输入高度
-    param use_amp: 是否启用 AMP
-    param use_mask: 是否读取 mask 并计算 masked_acc
-    param device: 运行设备
-    param qat_mode: QAT 模式，off 或 fine_tune
-    param qat_backend: QAT backend，qnnpack 或 fbgemm
-    param qat_learning_rate: QAT 阶段可选学习率覆盖
-    param qat_disable_observer_last_n_epochs: QAT 最后多少轮关闭 observer
-    param qat_freeze_bn_after_epoch: QAT 从第几轮开始冻结 BN 统计
-    return: 无
+    summary: training OpenEDS model supports AMP
+    param root_dir: dataset directory
+    param batch_size: batch
+    param num_epochs: training
+    param learning_rate:
+    param num_workers: DataLoader
+    param save_checkpoint_path: checkpoint savepath
+    param resume_checkpoint_path: optional checkpoint
+    param in_channels: input
+    param num_classes: classcount
+    param base_channels: U-Net
+    param input_width: modelinput
+    param input_height: modelinput
+    param use_amp: enable AMP
+    param use_mask: read mask masked_acc
+    param device:
+    param qat_mode: QAT, off fine_tune
+    param qat_backend: QAT backend, qnnpack fbgemm
+    param qat_learning_rate: QAT optional
+    param qat_disable_observer_last_n_epochs: QAT observer
+    param qat_freeze_bn_after_epoch: QAT BN
+    return: none
     """
     set_seed(42)
 
@@ -153,7 +153,7 @@ def run_training(
     checkpoint_qat_backend = str(resolved_model_metadata["qat_backend"])
 
     if is_qat_mode and use_amp:
-        print("QAT 模式下将自动禁用 AMP 以保证量化统计稳定性。")
+        print("QAT disable AMP quantization.")
         use_amp = False
 
     selected_learning_rate = learning_rate
@@ -238,7 +238,7 @@ def run_training(
         optimizer = torch.optim.AdamW(model.parameters(), lr=selected_learning_rate)
         scaler = torch.cuda.amp.GradScaler(enabled=False)
         if resume_checkpoint_path and os.path.exists(resume_checkpoint_path):
-            print("QAT 模式下将忽略历史 optimizer 状态，并以当前学习率重新初始化优化器。")
+            print("QAT optimizer, current.")
 
     metadata = build_model_metadata(
         in_channels=in_channels,
@@ -309,56 +309,56 @@ def run_training(
                 metadata=metadata,
             )
 
-            print("已保存当前最佳完整 checkpoint。")
+            print(" savecurrent checkpoint.")
 
 
 def parse_args() -> argparse.Namespace:
     """
-    summary: 解析训练命令行参数
-    param 无: 无
-    return: 参数对象
+    summary: parsetrainingCLIarguments
+    param none: none
+    return: arguments
     """
-    parser = argparse.ArgumentParser(description="训练轻量 U-Net 眼部分割模型")
+    parser = argparse.ArgumentParser(description="training U-Net model")
 
-    parser.add_argument("--root_dir", type=str, required=True, help="OpenEDS 风格数据集根目录")
-    parser.add_argument("--batch_size", type=int, default=4, help="训练批大小")
-    parser.add_argument("--num_epochs", type=int, default=10, help="训练轮数")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="优化器学习率")
-    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader 进程数")
+    parser.add_argument("--root_dir", type=str, required=True, help="OpenEDS dataset directory")
+    parser.add_argument("--batch_size", type=int, default=4, help="trainingbatch ")
+    parser.add_argument("--num_epochs", type=int, default=10, help="training ")
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help=" ")
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader ")
 
-    parser.add_argument("--save_checkpoint_path", type=str, default=DEFAULT_CHECKPOINT_PATH, help="最佳模型 checkpoint 保存路径")
-    parser.add_argument("--resume_checkpoint_path", type=str, default=None, help="可选续训 checkpoint 路径")
+    parser.add_argument("--save_checkpoint_path", type=str, default=DEFAULT_CHECKPOINT_PATH, help=" model checkpoint savepath")
+    parser.add_argument("--resume_checkpoint_path", type=str, default=None, help="optional checkpoint path")
 
-    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="模型输入通道数")
-    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="模型输出类别数")
-    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net 基础通道数")
-    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="模型输入宽度")
-    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="模型输入高度")
-    parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
-    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="启用 CUDA AMP")
-    parser.add_argument("--no-amp", action="store_false", dest="amp", help="禁用 CUDA AMP")
-    parser.add_argument("--use_mask", action="store_true", default=DEFAULT_USE_MASK, help="读取 mask 并计算 masked_acc")
-    parser.add_argument("--no-use_mask", action="store_false", dest="use_mask", help="不读取 mask，加快数据加载")
-    parser.add_argument("--qat_mode", type=str, default="off", choices=["off", "fine_tune"], help="QAT 模式，off 或 fine_tune")
+    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="modelinput ")
+    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="modeloutputclass ")
+    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net ")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="modelinput ")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="modelinput ")
+    parser.add_argument("--device", type=str, default="auto", help=": auto/cpu/cuda")
+    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="enable CUDA AMP")
+    parser.add_argument("--no-amp", action="store_false", dest="amp", help="disable CUDA AMP")
+    parser.add_argument("--use_mask", action="store_true", default=DEFAULT_USE_MASK, help="read mask masked_acc")
+    parser.add_argument("--no-use_mask", action="store_false", dest="use_mask", help=" read mask, ")
+    parser.add_argument("--qat_mode", type=str, default="off", choices=["off", "fine_tune"], help="QAT, off fine_tune")
     parser.add_argument(
         "--qat_backend",
         type=str,
         default=DEFAULT_QAT_BACKEND,
         choices=["qnnpack", "fbgemm"],
-        help="QAT backend，建议部署到 ARM 时使用 qnnpack",
+        help="QAT backend, ARM qnnpack",
     )
-    parser.add_argument("--qat_learning_rate", type=float, default=None, help="QAT 模式下可选学习率覆盖")
+    parser.add_argument("--qat_learning_rate", type=float, default=None, help="QAT optional ")
     parser.add_argument(
         "--qat_disable_observer_last_n_epochs",
         type=int,
         default=1,
-        help="QAT 最后多少轮关闭 observer",
+        help="QAT observer",
     )
     parser.add_argument(
         "--qat_freeze_bn_after_epoch",
         type=int,
         default=2,
-        help="QAT 从第几轮开始冻结 BN 统计，<=0 表示不冻结",
+        help="QAT BN, <=0 ",
     )
 
     return parser.parse_args()
@@ -366,9 +366,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """
-    summary: 训练入口
-    param 无: 无
-    return: 无
+    summary: training
+    param none: none
+    return: none
     """
     args = parse_args()
 

@@ -17,11 +17,11 @@ class ResizeMeta:
 
 def resize_gray_image(image: np.ndarray, input_width: int, input_height: int) -> np.ndarray:
     """
-    summary: 将灰度图 resize 到模型输入尺寸
-    param image: 原始灰度图，范围建议为 0~1
-    param input_width: 输出宽度
-    param input_height: 输出高度
-    return: resize 后的 float32 灰度图
+    summary: resize modelinput
+    param image:, 0~1
+    param input_width: output
+    param input_height: output
+    return: resize float32
     """
     height, width = image.shape[:2]
     if width == input_width and height == input_height:
@@ -33,11 +33,11 @@ def resize_gray_image(image: np.ndarray, input_width: int, input_height: int) ->
 
 def resize_label_map(label: np.ndarray, input_width: int, input_height: int) -> np.ndarray:
     """
-    summary: 将标签图按最近邻 resize 到模型输入尺寸
-    param label: 原始标签图
-    param input_width: 输出宽度
-    param input_height: 输出高度
-    return: resize 后的 int64 标签图
+    summary: label resize modelinput
+    param label: label
+    param input_width: output
+    param input_height: output
+    return: resize int64 label
     """
     height, width = label.shape[:2]
     if width == input_width and height == input_height:
@@ -49,11 +49,11 @@ def resize_label_map(label: np.ndarray, input_width: int, input_height: int) -> 
 
 def resize_binary_mask(mask: np.ndarray, input_width: int, input_height: int) -> np.ndarray:
     """
-    summary: 将二值 mask 按最近邻 resize 到模型输入尺寸
-    param mask: 原始 mask
-    param input_width: 输出宽度
-    param input_height: 输出高度
-    return: resize 后的 uint8 二值 mask
+    summary: mask resize modelinput
+    param mask: mask
+    param input_width: output
+    param input_height: output
+    return: resize uint8 mask
     """
     height, width = mask.shape[:2]
     if width == input_width and height == input_height:
@@ -65,9 +65,9 @@ def resize_binary_mask(mask: np.ndarray, input_width: int, input_height: int) ->
 
 def normalize_gray_image(image: np.ndarray) -> np.ndarray:
     """
-    summary: 将灰度图规范化到 0~1 float32
-    param image: 输入图像
-    return: 归一化结果
+    summary: 0~1 float32
+    param image: inputimage
+    return:
     """
     image = image.astype(np.float32)
     if image.max() > 1.0:
@@ -77,11 +77,11 @@ def normalize_gray_image(image: np.ndarray) -> np.ndarray:
 
 def preprocess_gray_image(image: np.ndarray, input_width: int, input_height: int) -> np.ndarray:
     """
-    summary: 对灰度图执行 raw-resize 预处理
-    param image: 输入灰度图
-    param input_width: 输出宽度
-    param input_height: 输出高度
-    return: 预处理后的 float32 图像
+    summary: raw-resize process
+    param image: input
+    param input_width: output
+    param input_height: output
+    return: process float32 image
     """
     normalized = normalize_gray_image(image)
     return resize_gray_image(normalized, input_width=input_width, input_height=input_height)
@@ -89,11 +89,11 @@ def preprocess_gray_image(image: np.ndarray, input_width: int, input_height: int
 
 def preprocess_gray_image_to_tensor(image: np.ndarray, input_width: int, input_height: int) -> torch.Tensor:
     """
-    summary: 将灰度图预处理为 BxCxHxW 中的单样本张量
-    param image: 输入灰度图
-    param input_width: 输出宽度
-    param input_height: 输出高度
-    return: 形状为 1xHxW 的 float32 张量
+    summary: process BxCxHxW sample
+    param image: input
+    param input_width: output
+    param input_height: output
+    return: 1xHxW float32
     """
     processed = preprocess_gray_image(image=image, input_width=input_width, input_height=input_height)
     return torch.from_numpy(processed).unsqueeze(0).float()
@@ -105,11 +105,11 @@ def preprocess_bgr_frame(
     input_height: int,
 ) -> tuple[np.ndarray, torch.Tensor, ResizeMeta]:
     """
-    summary: 对 BGR 帧执行灰度化与 raw-resize 预处理
-    param frame_bgr: 输入 BGR 图像
-    param input_width: 模型输入宽度
-    param input_height: 模型输入高度
-    return: 预览灰度图、模型输入张量、映射元信息
+    summary: BGR raw-resize process
+    param frame_bgr: input BGR image
+    param input_width: modelinput
+    param input_height: modelinput
+    return:, modelinput,
     """
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     processed = preprocess_gray_image(gray, input_width=input_width, input_height=input_height)

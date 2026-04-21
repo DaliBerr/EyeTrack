@@ -233,6 +233,49 @@ python quantize_onnx_model.py \
 - 模型默认类别数为 4，代码中约定 `iris=2`、`pupil=3`。
 - 结果目录如 `checkpoints/`、`sequence_outputs/`、`sequence_analysis/`、`vis_val/` 已在 `.gitignore` 中排除。
 
+## PC 演示录制模式
+
+桌面端实时入口 `realtime_eye_direction.py` 现在支持用预录 FPV 视频生成演示成片，适合在 PC 上做录屏质量更高的展示。
+
+### 启动示例
+
+```bash
+python realtime_eye_direction.py \
+  --model_path ./checkpoints/unet_b16_384x240_fp32.onnx \
+  --camera_index 0 \
+  --feature_mode pupil_iris \
+  --demo_fpv_video ./demo/fpv_take.mp4
+```
+
+如需显式指定输出路径：
+
+```bash
+python realtime_eye_direction.py \
+  --model_path ./checkpoints/unet_b16_384x240_fp32.onnx \
+  --camera_index 0 \
+  --feature_mode pupil_iris \
+  --demo_fpv_video ./demo/fpv_take.mp4 \
+  --demo_output ./demo/fpv_take_gaze_demo.mp4
+```
+
+### 使用流程
+
+- 启动后主窗口仍显示近眼实时预览，用鼠标框选 ROI。
+- 按 `s` 开始九点校准；校准期间会自动额外录制一段校准视频，底图为 calibration target canvas，并把 ROI Gray / Segmentation 小窗放在偏左中部。
+- 校准完成后按 `v`，脚本会把 `--demo_fpv_video` 回退到第 1 帧并开始导出。
+- 导出时主窗口会切到最终成片预览，底图为 FPV 视频，并叠加 gaze 空心圆、左下角 ROI Gray 小窗和四类分割图。
+- 再按一次 `v` 可提前停止导出；按 `q` 退出时也会先安全收尾 writer。
+
+### 默认行为
+
+- `--demo_fpv_video` 是演示模式开关；未传时仍保持原有桌面实时预览行为。
+- 输出视频固定为无音频 MP4，编码使用 OpenCV `mp4v`，分辨率与 FPS 继承 FPV 源视频。
+- 若未传 `--demo_output`，默认输出到 FPV 源视频同目录，文件名为 `<源文件名>_gaze_demo.mp4`。
+- 校准阶段会额外自动生成一个同目录视频，文件名为 `<demo_output_stem>_calibration.mp4`。
+- 演示模式会把较低频的 gaze 更新线性插值到视频帧率，并使用更粗、更醒目的 marker 叠加到 FPV 底图。
+- 演示成片不会烧录桌面调试 HUD，只保留 gaze marker、ROI Gray 小窗和分割图。
+- `r`、`c`、`s`、`x` 在导出中触发时，会先安全关闭当前 writer，再执行各自原有的重置/清除/校准逻辑。
+
 ## 树莓派 5 双 CSI 实时运行
 
 树莓派专用实时入口是 `realtime_eye_direction_pi.py`，不会复用桌面版 `realtime_eye_direction.py`。

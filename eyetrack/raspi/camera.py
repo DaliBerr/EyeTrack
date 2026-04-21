@@ -17,7 +17,7 @@ def require_picamera2():
         from picamera2 import Picamera2
     except ImportError as exc:
         raise RuntimeError(
-            "缺少 picamera2。请在树莓派上安装 python3-picamera2 后再运行树莓派实时脚本。"
+            "Missing picamera2. Install python3-picamera2 on Raspberry Pi before running the realtime script."
         ) from exc
 
     return Picamera2
@@ -27,7 +27,7 @@ def require_libcamera_transform():
     try:
         from libcamera import Transform
     except ImportError as exc:
-        raise RuntimeError("缺少 libcamera Python 绑定，无法配置相机翻转。") from exc
+        raise RuntimeError("Missing libcamera Python bindings; cannot configure camera flip.") from exc
 
     return Transform
 
@@ -64,9 +64,9 @@ def discover_picamera_cameras() -> list[CameraDeviceInfo]:
 
 def extract_y_plane_from_yuv420(frame: np.ndarray, height: int, width: int) -> np.ndarray:
     if frame.ndim != 2:
-        raise ValueError(f"YUV420 输入应为二维数组，实际 shape={frame.shape}")
+        raise ValueError(f"YUV420 input array, shape={frame.shape}")
     if frame.shape[1] != width or frame.shape[0] < height:
-        raise ValueError(f"YUV420 输入尺寸异常，期望至少 {(height, width)}，实际 {frame.shape}")
+        raise ValueError(f"YUV420 input anomaly, {(height, width)}, {frame.shape}")
     return frame[:height, :width]
 
 
@@ -78,7 +78,7 @@ def prepare_eye_tensor_from_yuv420(
     y_plane = extract_y_plane_from_yuv420(frame=frame, height=input_height, width=input_width)
     if y_plane.shape != (input_height, input_width):
         raise ValueError(
-            f"眼动输入尺寸与模型输入不匹配，当前 {y_plane.shape}，模型需要 {(input_height, input_width)}。"
+            f" input modelinput, current {y_plane.shape}, model {(input_height, input_width)}."
         )
 
     preview = np.ascontiguousarray(y_plane)
@@ -104,7 +104,7 @@ def convert_fpv_frame_to_bgr(frame: np.ndarray, pixel_format: str) -> np.ndarray
     if normalized == "YUV420":
         return cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_I420)
 
-    raise ValueError(f"不支持的 FPV 像素格式: {pixel_format}")
+    raise ValueError(f"Unsupported FPV pixel format: {pixel_format}")
 
 
 class PicameraStreamWorker:
@@ -200,7 +200,7 @@ class PicameraStreamWorker:
 
                 capture_context = getattr(self._camera, "captured_request", None)
                 if not callable(capture_context):
-                    raise RuntimeError("当前 picamera2 版本缺少 captured_request()，无法安全同步图像和 metadata。")
+                    raise RuntimeError("current picamera2 missing captured_request(), unable to image metadata.")
 
                 with capture_context() as request:
                     array = request.make_array(self.config.stream_name)
