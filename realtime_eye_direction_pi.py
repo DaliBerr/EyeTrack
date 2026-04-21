@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import time
 from typing import Optional
@@ -234,41 +235,41 @@ class AdaptiveKalmanFilter2D:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="树莓派 5 双 CSI 实时视线元数据 + FPV 视频")
-    parser.add_argument("--model_path", type=str, required=True, help="量化 ONNX 模型路径，仅支持 .onnx")
-    parser.add_argument("--eye_only_mode", action="store_true", help="仅使用 eye 相机，跳过 FPV/RTSP。")
-    parser.add_argument("--eye_camera_id", type=int, default=0, help="近眼红外相机 ID")
-    parser.add_argument("--fpv_camera_id", type=int, default=1, help="FPV 相机 ID")
-    parser.add_argument("--eye_width", type=int, default=DEFAULT_INPUT_WIDTH, help="近眼相机宽度，必须与模型输入一致")
-    parser.add_argument("--eye_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="近眼相机高度，必须与模型输入一致")
-    parser.add_argument("--fpv_width", type=int, default=DEFAULT_FPV_WIDTH, help="FPV 输出宽度")
-    parser.add_argument("--fpv_height", type=int, default=DEFAULT_FPV_HEIGHT, help="FPV 输出高度")
-    parser.add_argument("--eye_fps", type=float, default=DEFAULT_EYE_FPS, help="近眼相机帧率")
-    parser.add_argument("--fpv_fps", type=float, default=DEFAULT_FPV_FPS, help="FPV 相机帧率")
-    parser.add_argument("--feature_mode", type=str, choices=["pupil_iris", "iris_only"], default="iris_only", help="实时校准与跟踪使用的特征模式")
-    parser.add_argument("--sync_tolerance_ms", type=float, default=DEFAULT_SYNC_TOLERANCE_MS, help="cam0/cam1 时间戳容差，超过则标记 sync_stale")
-    parser.add_argument("--rtsp_host", type=str, default=DEFAULT_RTSP_HOST, help="RTSP 绑定地址")
-    parser.add_argument("--rtsp_port", type=int, default=DEFAULT_RTSP_PORT, help="RTSP 端口")
-    parser.add_argument("--rtsp_path", type=str, default=DEFAULT_RTSP_PATH, help="RTSP 路径")
-    parser.add_argument("--rtsp_bitrate_kbps", type=int, default=DEFAULT_RTSP_BITRATE_KBPS, help="RTSP H.264 目标码率")
-    parser.add_argument("--metadata_stdout", dest="metadata_stdout", action="store_true", help="将 gaze/cali 元数据以 JSON 行格式输出到 stdout")
-    parser.add_argument("--no-metadata_stdout", dest="metadata_stdout", action="store_false", help="禁用 stdout 元数据输出")
-    parser.add_argument("--metadata_udp_host", type=str, default=None, help="可选 UDP 元数据目标地址")
-    parser.add_argument("--metadata_udp_port", type=int, default=None, help="可选 UDP 元数据目标端口")
-    parser.add_argument("--eye_hflip", action="store_true", help="近眼相机水平翻转")
-    parser.add_argument("--eye_vflip", action="store_true", help="近眼相机垂直翻转")
-    parser.add_argument("--fpv_hflip", action="store_true", help="FPV 相机水平翻转")
-    parser.add_argument("--fpv_vflip", action="store_true", help="FPV 相机垂直翻转")
-    parser.add_argument("--fpv_pixel_format", type=str, default=DEFAULT_FPV_PIXEL_FORMAT, help="FPV 像素格式，默认 BGR888")
-    parser.add_argument("--camera_stale_ms", type=float, default=DEFAULT_CAMERA_STALE_MS, help="相机帧超过该时长未更新时标记 stale")
-    parser.add_argument("--reconnect_interval_ms", type=int, default=DEFAULT_RECONNECT_INTERVAL_MS, help="相机异常后的自动重连间隔")
-    parser.add_argument("--calibration_settle_ms", type=int, default=DEFAULT_CALIBRATION_SETTLE_MS, help="校准点切换后的稳定等待时长")
-    parser.add_argument("--calibration_capture_ms", type=int, default=DEFAULT_CALIBRATION_CAPTURE_MS, help="每个校准点的采样时长")
-    parser.add_argument("--calibration_min_valid_frames", type=int, default=DEFAULT_CALIBRATION_MIN_VALID_FRAMES, help="每个校准点要求的最少有效帧数")
-    parser.add_argument("--calibration_margin", type=float, default=DEFAULT_CALIBRATION_MARGIN, help="四角校准点距边缘的归一化留白")
-    parser.add_argument("--eye_preview", dest="eye_preview", action="store_true", help="开启本地 eye 追踪预览窗口。")
-    parser.add_argument("--no-eye_preview", dest="eye_preview", action="store_false", help="关闭本地 eye 追踪预览窗口。")
-    parser.add_argument("--eye_preview_scale", type=float, default=DEFAULT_EYE_PREVIEW_SCALE, help="eye 预览窗口缩放倍数")
+    parser = argparse.ArgumentParser(description="Raspberry Pi 5 dual-CSI real-time gaze metadata + FPV video")
+    parser.add_argument("--model_path", type=str, required=True, help="Quantized ONNX model path (.onnx only)")
+    parser.add_argument("--eye_only_mode", action="store_true", help="Use only the eye camera and skip FPV/RTSP.")
+    parser.add_argument("--eye_camera_id", type=int, default=0, help="Near-eye IR camera ID")
+    parser.add_argument("--fpv_camera_id", type=int, default=1, help="FPV camera ID")
+    parser.add_argument("--eye_width", type=int, default=DEFAULT_INPUT_WIDTH, help="Near-eye camera width; must match model input")
+    parser.add_argument("--eye_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="Near-eye camera height; must match model input")
+    parser.add_argument("--fpv_width", type=int, default=DEFAULT_FPV_WIDTH, help="FPV output width")
+    parser.add_argument("--fpv_height", type=int, default=DEFAULT_FPV_HEIGHT, help="FPV output height")
+    parser.add_argument("--eye_fps", type=float, default=DEFAULT_EYE_FPS, help="Near-eye camera FPS")
+    parser.add_argument("--fpv_fps", type=float, default=DEFAULT_FPV_FPS, help="FPV camera FPS")
+    parser.add_argument("--feature_mode", type=str, choices=["pupil_iris", "iris_only"], default="iris_only", help="Feature mode used for real-time calibration and tracking")
+    parser.add_argument("--sync_tolerance_ms", type=float, default=DEFAULT_SYNC_TOLERANCE_MS, help="cam0/cam1 timestamp tolerance in ms; larger skew marks sync_stale")
+    parser.add_argument("--rtsp_host", type=str, default=DEFAULT_RTSP_HOST, help="RTSP bind host")
+    parser.add_argument("--rtsp_port", type=int, default=DEFAULT_RTSP_PORT, help="RTSP port")
+    parser.add_argument("--rtsp_path", type=str, default=DEFAULT_RTSP_PATH, help="RTSP path")
+    parser.add_argument("--rtsp_bitrate_kbps", type=int, default=DEFAULT_RTSP_BITRATE_KBPS, help="RTSP H.264 target bitrate")
+    parser.add_argument("--metadata_stdout", dest="metadata_stdout", action="store_true", help="Output gaze/calibration metadata as JSON lines to stdout")
+    parser.add_argument("--no-metadata_stdout", dest="metadata_stdout", action="store_false", help="Disable metadata output to stdout")
+    parser.add_argument("--metadata_udp_host", type=str, default=None, help="Optional UDP host for metadata output")
+    parser.add_argument("--metadata_udp_port", type=int, default=None, help="Optional UDP port for metadata output")
+    parser.add_argument("--eye_hflip", action="store_true", help="Flip near-eye camera horizontally")
+    parser.add_argument("--eye_vflip", action="store_true", help="Flip near-eye camera vertically")
+    parser.add_argument("--fpv_hflip", action="store_true", help="Flip FPV camera horizontally")
+    parser.add_argument("--fpv_vflip", action="store_true", help="Flip FPV camera vertically")
+    parser.add_argument("--fpv_pixel_format", type=str, default=DEFAULT_FPV_PIXEL_FORMAT, help="FPV pixel format (default: BGR888)")
+    parser.add_argument("--camera_stale_ms", type=float, default=DEFAULT_CAMERA_STALE_MS, help="Mark frame stale when camera has not updated for this duration")
+    parser.add_argument("--reconnect_interval_ms", type=int, default=DEFAULT_RECONNECT_INTERVAL_MS, help="Auto-reconnect interval after camera errors")
+    parser.add_argument("--calibration_settle_ms", type=int, default=DEFAULT_CALIBRATION_SETTLE_MS, help="Settle time after switching calibration points")
+    parser.add_argument("--calibration_capture_ms", type=int, default=DEFAULT_CALIBRATION_CAPTURE_MS, help="Capture duration for each calibration point")
+    parser.add_argument("--calibration_min_valid_frames", type=int, default=DEFAULT_CALIBRATION_MIN_VALID_FRAMES, help="Minimum valid frames required for each calibration point")
+    parser.add_argument("--calibration_margin", type=float, default=DEFAULT_CALIBRATION_MARGIN, help="Normalized margin from edges for corner calibration points")
+    parser.add_argument("--eye_preview", dest="eye_preview", action="store_true", help="Enable local eye-tracking preview window")
+    parser.add_argument("--no-eye_preview", dest="eye_preview", action="store_false", help="Disable local eye-tracking preview window")
+    parser.add_argument("--eye_preview_scale", type=float, default=DEFAULT_EYE_PREVIEW_SCALE, help="Scale factor for the eye preview window")
     parser.set_defaults(metadata_stdout=True, eye_preview=None)
     return parser.parse_args()
 
@@ -290,7 +291,7 @@ def resolve_display_host(rtsp_host: str) -> str:
 def print_camera_inventory(eye_camera_id: int, fpv_camera_id: Optional[int]) -> None:
     cameras = discover_picamera_cameras()
     if len(cameras) == 0:
-        raise RuntimeError("未发现任何 Picamera2 相机。")
+        raise RuntimeError("No Picamera2 cameras were detected.")
 
     print("detected cameras:")
     for camera in cameras:
@@ -307,11 +308,11 @@ def print_camera_inventory(eye_camera_id: int, fpv_camera_id: Optional[int]) -> 
 
     camera_ids = {camera.camera_id for camera in cameras}
     if eye_camera_id not in camera_ids:
-        raise RuntimeError(f"未找到 eye_camera_id={eye_camera_id} 对应的相机。")
+        raise RuntimeError(f"No camera found for eye_camera_id={eye_camera_id}.")
     if fpv_camera_id is not None and fpv_camera_id not in camera_ids:
-        raise RuntimeError(f"未找到 fpv_camera_id={fpv_camera_id} 对应的相机。")
+        raise RuntimeError(f"No camera found for fpv_camera_id={fpv_camera_id}.")
     if fpv_camera_id is not None and eye_camera_id == fpv_camera_id:
-        raise RuntimeError("eye_camera_id 与 fpv_camera_id 不能相同。")
+        raise RuntimeError("eye_camera_id and fpv_camera_id must be different.")
 
 
 def clear_tracking_state(
@@ -363,12 +364,22 @@ def resolve_preview_enabled(eye_only_mode: bool, eye_preview: Optional[bool]) ->
     return bool(eye_preview)
 
 
+def has_graphical_session() -> bool:
+    display = os.environ.get("DISPLAY", "").strip()
+    wayland_display = os.environ.get("WAYLAND_DISPLAY", "").strip()
+    return len(display) > 0 or len(wayland_display) > 0
+
+
 def initialize_eye_preview_window(enabled: bool, scale: float, eye_width: int, eye_height: int) -> bool:
     if not enabled:
         return False
 
+    if not has_graphical_session():
+        print("warning: no DISPLAY/WAYLAND_DISPLAY detected; disabling eye preview window.")
+        return False
+
     if cv2 is None:
-        print("warning: 缺少 cv2，无法开启 eye 预览窗口。")
+        print("warning: cv2 is unavailable; cannot enable eye preview window.")
         return False
 
     try:
@@ -376,9 +387,23 @@ def initialize_eye_preview_window(enabled: bool, scale: float, eye_width: int, e
         width = max(320, int(round(float(eye_width) * float(scale))))
         height = max(240, int(round(float(eye_height) * float(scale))))
         cv2.resizeWindow(EYE_PREVIEW_WINDOW_NAME, width, height)
+
+        # Probe GUI backend availability early to avoid repeated runtime warnings in the main loop.
+        placeholder = np.full((max(eye_height, 120), max(eye_width, 160), 3), 24, dtype=np.uint8)
+        cv2.putText(placeholder, "Eye preview is initializing...", (16, 54), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (230, 230, 230), 2, cv2.LINE_AA)
+        cv2.putText(placeholder, "Please wait for camera frames.", (16, 88), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.imshow(EYE_PREVIEW_WINDOW_NAME, placeholder)
+        cv2.waitKey(1)
+
+        visible = cv2.getWindowProperty(EYE_PREVIEW_WINDOW_NAME, cv2.WND_PROP_VISIBLE)
+        if visible < 1:
+            print("warning: eye preview window is not visible after creation; disabling preview.")
+            destroy_window(EYE_PREVIEW_WINDOW_NAME)
+            return False
         return True
     except cv2.error as exc:
-        print(f"warning: 打开 eye 预览窗口失败: {exc}")
+        print(f"warning: failed to create eye preview window: {exc}")
+        destroy_window(EYE_PREVIEW_WINDOW_NAME)
         return False
 
 
@@ -464,7 +489,7 @@ def build_eye_preview_frame(
     preview_scale: float,
 ) -> np.ndarray:
     if cv2 is None:
-        raise RuntimeError("cv2 不可用，无法构建预览帧。")
+        raise RuntimeError("cv2 is unavailable; cannot build preview frame.")
 
     preview_bgr = cv2.cvtColor(eye_preview_gray, cv2.COLOR_GRAY2BGR)
     if geometry_result is not None:
@@ -520,7 +545,7 @@ def build_eye_preview_frame(
 def main() -> None:
     args = parse_args()
     if (args.metadata_udp_host is None) != (args.metadata_udp_port is None):
-        raise RuntimeError("metadata_udp_host 与 metadata_udp_port 必须同时提供，或同时省略。")
+        raise RuntimeError("metadata_udp_host and metadata_udp_port must be provided together or omitted together.")
 
     eye_only_mode = bool(args.eye_only_mode)
     eye_preview_enabled = resolve_preview_enabled(eye_only_mode=eye_only_mode, eye_preview=args.eye_preview)
@@ -530,12 +555,21 @@ def main() -> None:
 
     if runtime.input_width != args.eye_width or runtime.input_height != args.eye_height:
         raise RuntimeError(
-            f"eye_width/eye_height 必须与模型输入完全一致。模型输入={runtime.input_width}x{runtime.input_height}，"
-            f"当前参数={args.eye_width}x{args.eye_height}。"
+            f"eye_width/eye_height must exactly match the model input. model input={runtime.input_width}x{runtime.input_height}, "
+            f"current args={args.eye_width}x{args.eye_height}."
         )
 
     selected_fpv_camera_id = None if eye_only_mode else int(args.fpv_camera_id)
     print_camera_inventory(eye_camera_id=args.eye_camera_id, fpv_camera_id=selected_fpv_camera_id)
+
+    # Initialize HighGUI before Picamera/RTSP threads to reduce GTK/Qt thread-context conflicts.
+    eye_preview_enabled = initialize_eye_preview_window(
+        enabled=eye_preview_enabled,
+        scale=eye_preview_scale,
+        eye_width=args.eye_width,
+        eye_height=args.eye_height,
+    )
+    print("eye preview:", eye_preview_enabled)
 
     eye_worker = PicameraStreamWorker(
         PicameraStreamConfig(
@@ -598,14 +632,6 @@ def main() -> None:
         print("metadata udp:", f"{args.metadata_udp_host}:{args.metadata_udp_port}")
     print("metadata stdout:", args.metadata_stdout)
 
-    eye_preview_enabled = initialize_eye_preview_window(
-        enabled=eye_preview_enabled,
-        scale=eye_preview_scale,
-        eye_width=args.eye_width,
-        eye_height=args.eye_height,
-    )
-    print("eye preview:", eye_preview_enabled)
-
     quality_tracker = FeatureQualityTracker(alpha=QUALITY_TRACKER_ALPHA)
     kalman_filter = AdaptiveKalmanFilter2D(
         process_noise=KALMAN_PROCESS_NOISE,
@@ -620,7 +646,7 @@ def main() -> None:
     tracking_valid: bool
     displayed_screen_uv, last_valid_screen_ts_ms, tracking_valid = clear_tracking_state(quality_tracker, kalman_filter)
 
-    status_message = "树莓派实时已启动，按 s 开始九点校准。"
+    status_message = "Realtime pipeline started. Press s to begin nine-point calibration."
     last_eye_processed_ts: Optional[int] = None
     last_pushed_fpv_ts: Optional[int] = None
     last_eye_reconnect_ms = 0.0
@@ -666,17 +692,17 @@ def main() -> None:
                     current_feature_valid = False
                     current_feature_confidence = 0.0
                     latest_static_boundary_ellipse = None
-                    status_message = f"开始校准: {calibration_session.calibration_step}"
+                    status_message = f"Calibration started: {calibration_session.calibration_step}"
                     needs_push = True
                     needs_metadata_publish = True
                 elif key == "x":
                     if calibration_session is not None:
-                        calibration_session = cancel_calibration_session(calibration_session, reason="用户取消校准。")
+                        calibration_session = cancel_calibration_session(calibration_session, reason="Calibration canceled by user.")
                     displayed_screen_uv, last_valid_screen_ts_ms, tracking_valid = clear_tracking_state(quality_tracker, kalman_filter)
                     current_feature_valid = False
                     current_feature_confidence = 0.0
                     latest_static_boundary_ellipse = None
-                    status_message = "已取消当前校准。"
+                    status_message = "Current calibration was canceled."
                     needs_push = True
                     needs_metadata_publish = True
                 elif key == "r":
@@ -685,7 +711,7 @@ def main() -> None:
                     current_feature_valid = False
                     current_feature_confidence = 0.0
                     latest_static_boundary_ellipse = None
-                    status_message = "已重置跟踪与校准。"
+                    status_message = "Tracking and calibration have been reset."
                     needs_push = True
                     needs_metadata_publish = True
 
@@ -711,13 +737,13 @@ def main() -> None:
                     current_feature_valid = False
                     current_feature_confidence = 0.0
                     latest_static_boundary_ellipse = None
-                    status_message = "相机已重连，校准已清空。"
+                    status_message = "Camera reconnected; calibration has been cleared."
                     needs_push = True
                     needs_metadata_publish = True
                 elif eye_reconnect_error is not None:
-                    status_message = f"eye 相机异常，等待重连: {eye_reconnect_error}"
+                    status_message = f"eye camera error; waiting to reconnect: {eye_reconnect_error}"
                 elif fpv_reconnect_error is not None:
-                    status_message = f"fpv 相机异常，等待重连: {fpv_reconnect_error}"
+                    status_message = f"fpv camera error; waiting to reconnect: {fpv_reconnect_error}"
 
                 eye_frame = eye_worker.get_latest_frame()
                 fpv_frame = None if fpv_worker is None else fpv_worker.get_latest_frame()
@@ -803,15 +829,15 @@ def main() -> None:
                             boundary_ellipse=geometry_result.outer_boundary_geometry.ellipse,
                         )
                         if calibration_session.state != before_state or calibration_session.calibration_step != before_step:
-                            status_message = f"校准: {calibration_session.calibration_step} ({calibration_session.state})"
+                            status_message = f"Calibration: {calibration_session.calibration_step} ({calibration_session.state})"
                         if calibration_session.state == "failed":
                             displayed_screen_uv, last_valid_screen_ts_ms, tracking_valid = clear_tracking_state(quality_tracker, kalman_filter)
                             current_feature_valid = False
                             current_feature_confidence = 0.0
                             latest_static_boundary_ellipse = None
-                            status_message = calibration_session.failure_reason or "校准失败。"
+                            status_message = calibration_session.failure_reason or "Calibration failed."
                         elif calibration_session.state == "completed":
-                            status_message = "九点校准完成。"
+                            status_message = "Nine-point calibration completed."
 
                     if (
                         calibration_model_for_feature is not None
@@ -849,7 +875,7 @@ def main() -> None:
                     if last_valid_screen_ts_ms is None or now_ms - last_valid_screen_ts_ms > STALE_SCREEN_POINT_TIMEOUT_MS:
                         displayed_screen_uv = None
                     if eye_health.last_error is None:
-                        status_message = "eye 相机帧已过期。"
+                        status_message = "eye camera frame is stale."
                     needs_metadata_publish = True
 
                 if needs_metadata_publish and eye_frame is not None:
@@ -912,15 +938,15 @@ def main() -> None:
                             if calibration_window_visible:
                                 destroy_window(CALIBRATION_WINDOW_NAME)
                                 calibration_window_visible = False
-                            status_message = "eye 预览窗口已关闭。"
+                            status_message = "eye preview window closed."
                     except cv2.error as exc:
-                        print(f"warning: eye 预览窗口异常，已关闭: {exc}")
+                        print(f"warning: eye preview window error; disabled: {exc}")
                         eye_preview_enabled = False
                         destroy_window(EYE_PREVIEW_WINDOW_NAME)
                         if calibration_window_visible:
                             destroy_window(CALIBRATION_WINDOW_NAME)
                             calibration_window_visible = False
-                        status_message = "eye 预览窗口不可用，已自动关闭。"
+                        status_message = "eye preview window unavailable; disabled automatically."
 
                 time.sleep(0.005)
     finally:
