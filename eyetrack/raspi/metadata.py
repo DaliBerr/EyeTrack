@@ -14,6 +14,8 @@ class GazeMetadataPacket:
     eye_timestamp_ns: Optional[int]
     fpv_timestamp_ns: Optional[int]
     screen_uv: Optional[tuple[float, float]]
+    fpv_output_mode: str
+    recording_active: bool
     tracking_valid: bool
     feature_valid: bool
     feature_mode: str
@@ -48,6 +50,8 @@ def build_gaze_metadata_packet(
     eye_timestamp_ns: Optional[int],
     fpv_timestamp_ns: Optional[int],
     screen_uv: Optional[tuple[float, float]],
+    fpv_output_mode: str,
+    recording_active: bool,
     tracking_valid: bool,
     feature_valid: bool,
     feature_mode: str,
@@ -69,6 +73,8 @@ def build_gaze_metadata_packet(
         eye_timestamp_ns=eye_timestamp_ns,
         fpv_timestamp_ns=fpv_timestamp_ns,
         screen_uv=screen_uv,
+        fpv_output_mode=str(fpv_output_mode),
+        recording_active=bool(recording_active),
         tracking_valid=bool(tracking_valid),
         feature_valid=bool(feature_valid),
         feature_mode=str(feature_mode),

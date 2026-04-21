@@ -27,6 +27,7 @@ from eyetrack.gaze import (
 )
 from eyetrack.realtime_gaze import build_calibration_canvas, destroy_window, draw_screen_preview_panel
 from eyetrack.raspi import (
+    FpvVideoRecorder,
     GazeMetadataPublisher,
     NonBlockingTerminalReader,
     PiOnnxSegmentationRuntime,
@@ -34,6 +35,7 @@ from eyetrack.raspi import (
     PicameraStreamWorker,
     RtspVideoServer,
     build_gaze_metadata_packet,
+    compose_recording_overlay,
     convert_fpv_frame_to_bgr,
     discover_picamera_cameras,
     is_frame_stale,
@@ -70,9 +72,11 @@ DEFAULT_RTSP_HOST = "0.0.0.0"
 DEFAULT_RTSP_PORT = 8554
 DEFAULT_RTSP_PATH = "fpv"
 DEFAULT_RTSP_BITRATE_KBPS = 4000
+DEFAULT_RECORD_DIR = "./recordings"
+DEFAULT_RECORD_KEY = "v"
 DEFAULT_RECONNECT_INTERVAL_MS = 2000
-DEFAULT_CALIBRATION_SETTLE_MS = 500
-DEFAULT_CALIBRATION_CAPTURE_MS = 1000
+DEFAULT_CALIBRATION_SETTLE_MS = 1500
+DEFAULT_CALIBRATION_CAPTURE_MS = 3000
 DEFAULT_CALIBRATION_MIN_VALID_FRAMES = 15
 DEFAULT_CALIBRATION_MARGIN = 0.1
 DEFAULT_EYE_PREVIEW_SCALE = 2.0
@@ -252,6 +256,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rtsp_port", type=int, default=DEFAULT_RTSP_PORT, help="RTSP port")
     parser.add_argument("--rtsp_path", type=str, default=DEFAULT_RTSP_PATH, help="RTSP path")
     parser.add_argument("--rtsp_bitrate_kbps", type=int, default=DEFAULT_RTSP_BITRATE_KBPS, help="RTSP H.264 target bitrate")
+    parser.add_argument("--fpv_output_mode", type=str, choices=["rtsp", "record"], default="rtsp", help="FPV output mode")
+    parser.add_argument("--record_dir", type=str, default=DEFAULT_RECORD_DIR, help="Local directory used by record mode")
+    parser.add_argument("--record_key", type=str, default=DEFAULT_RECORD_KEY, help="Single-key toggle for record mode")
+    parser.add_argument("--record_bitrate_kbps", type=int, default=DEFAULT_RTSP_BITRATE_KBPS, help="Record-mode H.264 target bitrate")
     parser.add_argument("--metadata_stdout", dest="metadata_stdout", action="store_true", help="Output gaze/calibration metadata as JSON lines to stdout")
     parser.add_argument("--no-metadata_stdout", dest="metadata_stdout", action="store_false", help="Disable metadata output to stdout")
     parser.add_argument("--metadata_udp_host", type=str, default=None, help="Optional UDP host for metadata output")
@@ -271,7 +279,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-eye_preview", dest="eye_preview", action="store_false", help="Disable local eye-tracking preview window")
     parser.add_argument("--eye_preview_scale", type=float, default=DEFAULT_EYE_PREVIEW_SCALE, help="Scale factor for the eye preview window")
     parser.set_defaults(metadata_stdout=True, eye_preview=None)
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    args.record_key = normalize_key_binding("--record_key", args.record_key)
+    if args.record_key in {"q", "r", "s", "x"}:
+        raise RuntimeError("--record_key must not reuse an existing command key (q, r, s, x).")
+    if bool(args.eye_only_mode) and args.fpv_output_mode == "record":
+        raise RuntimeError("eye_only_mode cannot be combined with --fpv_output_mode record.")
+    return args
 
 
 def resolve_display_host(rtsp_host: str) -> str:
@@ -419,6 +434,42 @@ def poll_preview_key(enabled: bool) -> Optional[str]:
     return key.lower() if key else None
 
 
+def normalize_key_binding(option_name: str, raw_key: str) -> str:
+    key = str(raw_key).strip().lower()
+    if len(key) != 1:
+        raise RuntimeError(f"{option_name} must be a single character.")
+    return key
+
+
+def validate_recording_start_request(
+    *,
+    eye_only_mode: bool,
+    calibration_session: Optional[CalibrationSession],
+    fpv_frame_available: bool,
+    recording_active: bool,
+) -> Optional[str]:
+    if recording_active:
+        return "Recording is already active."
+    if eye_only_mode:
+        return "Record mode is unavailable in eye-only mode."
+    if calibration_session is None or not calibration_session.is_calibrated:
+        return "Recording requires a completed calibration."
+    if not fpv_frame_available:
+        return "Cannot start recording because no FPV frame is available yet."
+    return None
+
+
+def stop_active_recording(recorder: Optional[FpvVideoRecorder]) -> tuple[Optional[str], Optional[str]]:
+    if recorder is None or not recorder.is_recording:
+        return None, None
+
+    try:
+        output_path = recorder.stop()
+        return output_path, None
+    except Exception as exc:
+        return None, str(exc)
+
+
 def format_screen_uv(screen_uv: Optional[tuple[float, float]]) -> str:
     if screen_uv is None:
         return "None"
@@ -487,6 +538,9 @@ def build_eye_preview_frame(
     inference_ms: Optional[float],
     status_message: str,
     preview_scale: float,
+    fpv_output_mode: str,
+    record_key: str,
+    recording_active: bool,
 ) -> np.ndarray:
     if cv2 is None:
         raise RuntimeError("cv2 is unavailable; cannot build preview frame.")
@@ -528,9 +582,10 @@ def build_eye_preview_frame(
         f"feature_valid={feature_valid} conf={feature_confidence:.3f} tracking_valid={tracking_valid}",
         f"fps={fps:.1f} inference={infer_text}",
         f"static_boundary={static_boundary_ellipse is not None}",
+        f"fpv_output={fpv_output_mode} recording={recording_active}",
         f"screen_uv={format_screen_uv(screen_uv)}",
         f"status={truncated_status}",
-        "keys: s=start x=cancel r=reset q=quit",
+        f"keys: s=start x=cancel r=reset {record_key}=record q=quit" if fpv_output_mode == "record" else "keys: s=start x=cancel r=reset q=quit",
     ]
 
     y = 24
@@ -548,6 +603,8 @@ def main() -> None:
         raise RuntimeError("metadata_udp_host and metadata_udp_port must be provided together or omitted together.")
 
     eye_only_mode = bool(args.eye_only_mode)
+    fpv_output_mode = str(args.fpv_output_mode)
+    record_key = str(args.record_key)
     eye_preview_enabled = resolve_preview_enabled(eye_only_mode=eye_only_mode, eye_preview=args.eye_preview)
     eye_preview_scale = max(0.5, float(args.eye_preview_scale))
 
@@ -601,7 +658,7 @@ def main() -> None:
         fpv_worker.start()
 
     rtsp_server: Optional[RtspVideoServer] = None
-    if fpv_worker is not None:
+    if fpv_worker is not None and fpv_output_mode == "rtsp":
         rtsp_server = RtspVideoServer(
             width=args.fpv_width,
             height=args.fpv_height,
@@ -612,6 +669,15 @@ def main() -> None:
             bitrate_kbps=args.rtsp_bitrate_kbps,
         )
         rtsp_server.start()
+    video_recorder: Optional[FpvVideoRecorder] = None
+    if fpv_worker is not None and fpv_output_mode == "record":
+        video_recorder = FpvVideoRecorder(
+            width=args.fpv_width,
+            height=args.fpv_height,
+            fps=int(args.fpv_fps),
+            output_dir=args.record_dir,
+            bitrate_kbps=args.record_bitrate_kbps,
+        )
 
     metadata_publisher = GazeMetadataPublisher(
         stdout_enabled=args.metadata_stdout,
@@ -626,6 +692,9 @@ def main() -> None:
         display_rtsp_url = f"rtsp://{display_host}:{args.rtsp_port}/{args.rtsp_path.strip('/')}"
         print("rtsp encoder:", rtsp_server.encoder_name)
         print("rtsp url:", display_rtsp_url)
+    elif fpv_output_mode == "record":
+        print("fpv output:", f"record -> {os.path.abspath(args.record_dir)}")
+        print("record key:", record_key)
     else:
         print("rtsp:", "disabled (eye-only mode)")
     if args.metadata_udp_host is not None and args.metadata_udp_port is not None:
@@ -647,8 +716,11 @@ def main() -> None:
     displayed_screen_uv, last_valid_screen_ts_ms, tracking_valid = clear_tracking_state(quality_tracker, kalman_filter)
 
     status_message = "Realtime pipeline started. Press s to begin nine-point calibration."
+    if fpv_output_mode == "record":
+        status_message += f" Press {record_key} after calibration to toggle recording."
     last_eye_processed_ts: Optional[int] = None
     last_pushed_fpv_ts: Optional[int] = None
+    last_recorded_fpv_ts: Optional[int] = None
     last_eye_reconnect_ms = 0.0
     last_fpv_reconnect_ms = 0.0
     last_inference_ms: Optional[float] = None
@@ -672,6 +744,7 @@ def main() -> None:
                 now_ns = time.monotonic_ns()
                 needs_push = False
                 needs_metadata_publish = False
+                recording_active = bool(video_recorder is not None and video_recorder.is_recording)
 
                 terminal_key = key_reader.poll_key()
                 preview_key = poll_preview_key(enabled=eye_preview_enabled)
@@ -680,6 +753,12 @@ def main() -> None:
                     running = False
                     continue
                 if key == "s":
+                    if recording_active:
+                        _, stop_error = stop_active_recording(video_recorder)
+                        if stop_error is not None:
+                            print(f"warning: failed to stop recording before calibration: {stop_error}")
+                        last_recorded_fpv_ts = None
+                        recording_active = False
                     calibration_session = begin_calibration_session(
                         now_ms=now_ms,
                         settle_ms=args.calibration_settle_ms,
@@ -696,6 +775,12 @@ def main() -> None:
                     needs_push = True
                     needs_metadata_publish = True
                 elif key == "x":
+                    if recording_active:
+                        _, stop_error = stop_active_recording(video_recorder)
+                        if stop_error is not None:
+                            print(f"warning: failed to stop recording during cancel: {stop_error}")
+                        last_recorded_fpv_ts = None
+                        recording_active = False
                     if calibration_session is not None:
                         calibration_session = cancel_calibration_session(calibration_session, reason="Calibration canceled by user.")
                     displayed_screen_uv, last_valid_screen_ts_ms, tracking_valid = clear_tracking_state(quality_tracker, kalman_filter)
@@ -706,6 +791,12 @@ def main() -> None:
                     needs_push = True
                     needs_metadata_publish = True
                 elif key == "r":
+                    if recording_active:
+                        _, stop_error = stop_active_recording(video_recorder)
+                        if stop_error is not None:
+                            print(f"warning: failed to stop recording during reset: {stop_error}")
+                        last_recorded_fpv_ts = None
+                        recording_active = False
                     calibration_session = None
                     displayed_screen_uv, last_valid_screen_ts_ms, tracking_valid = clear_tracking_state(quality_tracker, kalman_filter)
                     current_feature_valid = False
@@ -714,6 +805,26 @@ def main() -> None:
                     status_message = "Tracking and calibration have been reset."
                     needs_push = True
                     needs_metadata_publish = True
+                elif fpv_output_mode == "record" and key == record_key:
+                    start_error = validate_recording_start_request(
+                        eye_only_mode=eye_only_mode,
+                        calibration_session=calibration_session,
+                        fpv_frame_available=False,
+                        recording_active=recording_active,
+                    )
+                    if recording_active:
+                        output_path, stop_error = stop_active_recording(video_recorder)
+                        last_recorded_fpv_ts = None
+                        recording_active = False
+                        if stop_error is not None:
+                            status_message = f"Failed to finalize recording: {stop_error}"
+                        else:
+                            label = "recording" if output_path is None else os.path.basename(output_path)
+                            status_message = f"Recording stopped: {label}"
+                        needs_metadata_publish = True
+                    elif start_error is not None and start_error != "Cannot start recording because no FPV frame is available yet.":
+                        status_message = start_error
+                        needs_metadata_publish = True
 
                 last_eye_reconnect_ms, eye_reconnect_error, eye_reconnected = maybe_reconnect_camera(
                     worker=eye_worker,
@@ -732,6 +843,12 @@ def main() -> None:
                     )
 
                 if eye_reconnected or fpv_reconnected:
+                    if recording_active:
+                        _, stop_error = stop_active_recording(video_recorder)
+                        if stop_error is not None:
+                            print(f"warning: failed to stop recording during camera reconnect: {stop_error}")
+                        last_recorded_fpv_ts = None
+                        recording_active = False
                     calibration_session = None
                     displayed_screen_uv, last_valid_screen_ts_ms, tracking_valid = clear_tracking_state(quality_tracker, kalman_filter)
                     current_feature_valid = False
@@ -747,6 +864,26 @@ def main() -> None:
 
                 eye_frame = eye_worker.get_latest_frame()
                 fpv_frame = None if fpv_worker is None else fpv_worker.get_latest_frame()
+                if fpv_output_mode == "record" and key == record_key and not recording_active:
+                    start_error = validate_recording_start_request(
+                        eye_only_mode=eye_only_mode,
+                        calibration_session=calibration_session,
+                        fpv_frame_available=fpv_frame is not None,
+                        recording_active=False,
+                    )
+                    if start_error is not None:
+                        status_message = start_error
+                    elif video_recorder is None:
+                        status_message = "Record mode is not available because no recorder was configured."
+                    else:
+                        try:
+                            output_path = video_recorder.start()
+                            last_recorded_fpv_ts = None
+                            recording_active = True
+                            status_message = f"Recording started: {os.path.basename(output_path)}"
+                        except Exception as exc:
+                            status_message = f"Failed to start recording: {exc}"
+                    needs_metadata_publish = True
                 eye_health = eye_worker.get_health()
                 eye_stale = is_frame_stale(eye_frame, stale_after_ms=args.camera_stale_ms, now_ns=now_ns)
                 fpv_stale = False if fpv_worker is None else is_frame_stale(fpv_frame, stale_after_ms=args.camera_stale_ms, now_ns=now_ns)
@@ -878,11 +1015,37 @@ def main() -> None:
                         status_message = "eye camera frame is stale."
                     needs_metadata_publish = True
 
+                if rtsp_server is not None and fpv_frame is not None and (fpv_frame.timestamp_ns != last_pushed_fpv_ts or needs_push):
+                    base_frame = convert_fpv_frame_to_bgr(fpv_frame.frame, pixel_format=args.fpv_pixel_format)
+                    rtsp_server.push_frame(base_frame)
+                    last_pushed_fpv_ts = fpv_frame.timestamp_ns
+                elif video_recorder is not None and recording_active and fpv_frame is not None and fpv_frame.timestamp_ns != last_recorded_fpv_ts:
+                    base_frame = convert_fpv_frame_to_bgr(fpv_frame.frame, pixel_format=args.fpv_pixel_format)
+                    overlay_frame = compose_recording_overlay(
+                        base_frame,
+                        screen_uv=displayed_screen_uv,
+                        tracking_valid=tracking_valid,
+                    )
+                    if video_recorder.push_frame(overlay_frame):
+                        last_recorded_fpv_ts = fpv_frame.timestamp_ns
+                    else:
+                        output_path, stop_error = stop_active_recording(video_recorder)
+                        last_recorded_fpv_ts = None
+                        recording_active = False
+                        if stop_error is not None:
+                            status_message = f"Recording stopped after writer error: {stop_error}"
+                        else:
+                            label = "recorder" if output_path is None else os.path.basename(output_path)
+                            status_message = f"Recording stopped because {label} pipeline became unavailable."
+                        needs_metadata_publish = True
+
                 if needs_metadata_publish and eye_frame is not None:
                     metadata_packet = build_gaze_metadata_packet(
                         eye_timestamp_ns=eye_frame.timestamp_ns,
                         fpv_timestamp_ns=None if fpv_frame is None else fpv_frame.timestamp_ns,
                         screen_uv=displayed_screen_uv,
+                        fpv_output_mode=fpv_output_mode,
+                        recording_active=recording_active,
                         tracking_valid=tracking_valid,
                         feature_valid=current_feature_valid,
                         feature_mode=args.feature_mode,
@@ -896,11 +1059,6 @@ def main() -> None:
                         status_message=status_message,
                     )
                     metadata_publisher.publish(metadata_packet)
-
-                if rtsp_server is not None and fpv_frame is not None and (fpv_frame.timestamp_ns != last_pushed_fpv_ts or needs_push):
-                    base_frame = convert_fpv_frame_to_bgr(fpv_frame.frame, pixel_format=args.fpv_pixel_format)
-                    rtsp_server.push_frame(base_frame)
-                    last_pushed_fpv_ts = fpv_frame.timestamp_ns
 
                 if eye_preview_enabled and cv2 is not None and latest_eye_preview_gray is not None:
                     try:
@@ -918,6 +1076,9 @@ def main() -> None:
                             inference_ms=last_inference_ms,
                             status_message=status_message,
                             preview_scale=eye_preview_scale,
+                            fpv_output_mode=fpv_output_mode,
+                            record_key=record_key,
+                            recording_active=recording_active,
                         )
                         cv2.imshow(EYE_PREVIEW_WINDOW_NAME, preview_frame)
 
@@ -950,6 +1111,10 @@ def main() -> None:
 
                 time.sleep(0.005)
     finally:
+        if video_recorder is not None:
+            _, stop_error = stop_active_recording(video_recorder)
+            if stop_error is not None:
+                print(f"warning: failed to finalize recording during shutdown: {stop_error}")
         if fpv_worker is not None:
             fpv_worker.stop()
         eye_worker.stop()

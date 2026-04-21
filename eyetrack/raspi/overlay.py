@@ -52,6 +52,23 @@ def draw_gaze_point(
     return frame
 
 
+def draw_recording_gaze_circle(
+    frame: np.ndarray,
+    screen_uv: Optional[tuple[float, float]],
+    tracking_valid: bool,
+    radius: int = 14,
+    thickness: int = 2,
+) -> np.ndarray:
+    if screen_uv is None:
+        return frame
+
+    height, width = frame.shape[:2]
+    px, py = _map_uv_to_frame(screen_uv[0], screen_uv[1], width=width, height=height)
+    color = (0, 255, 0) if tracking_valid else (0, 165, 255)
+    cv2.circle(frame, (px, py), max(int(radius), 1), color, max(int(thickness), 1))
+    return frame
+
+
 def draw_calibration_target(frame: np.ndarray, calibration_session: Optional[CalibrationSession]) -> np.ndarray:
     if calibration_session is None or not calibration_session.is_active:
         return frame
@@ -122,4 +139,14 @@ def compose_fpv_overlay(
     output = draw_gaze_point(output, screen_uv=screen_uv, tracking_valid=tracking_valid)
     output = draw_calibration_target(output, calibration_session=calibration_session)
     output = draw_debug_panel(output, debug_state=debug_state, calibration_session=calibration_session)
+    return output
+
+
+def compose_recording_overlay(
+    fpv_frame_bgr: np.ndarray,
+    screen_uv: Optional[tuple[float, float]],
+    tracking_valid: bool,
+) -> np.ndarray:
+    output = fpv_frame_bgr.copy()
+    output = draw_recording_gaze_circle(output, screen_uv=screen_uv, tracking_valid=tracking_valid)
     return output

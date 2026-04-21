@@ -22,8 +22,12 @@ def require_gstreamer():
     return GLib, Gst, GstRtspServer
 
 
-def resolve_h264_encoder_name(Gst) -> str:
-    for encoder_name in ("v4l2h264enc", "v4l2slh264enc", "omxh264enc", "x264enc"):
+def resolve_h264_encoder_name(Gst, allow_software_fallback: bool = True) -> str:
+    encoder_candidates = ["v4l2h264enc", "v4l2slh264enc", "omxh264enc"]
+    if allow_software_fallback:
+        encoder_candidates.append("x264enc")
+
+    for encoder_name in encoder_candidates:
         if Gst.ElementFactory.find(encoder_name) is not None:
             return encoder_name
     raise RuntimeError("未找到可用的 H.264 编码器，请安装对应的 GStreamer encoder 插件。")
