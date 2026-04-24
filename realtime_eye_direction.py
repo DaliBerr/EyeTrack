@@ -46,7 +46,7 @@ from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_mode
 
 
 # =========================
-# 配置区
+# Configuration
 # =========================
 CHECKPOINT_PATH = DEFAULT_CHECKPOINT_PATH
 CAMERA_INDEX = 2
@@ -124,7 +124,7 @@ DEMO_GAZE_INVALID_COLOR = (0, 165, 255)
 
 
 # =========================
-# 数据结构
+# Data Structures
 # =========================
 @dataclass
 class EllipseResult:
@@ -412,7 +412,7 @@ class PreviewPanelPlacement:
 
 
 # =========================
-# 鼠标交互
+# Mouse Interaction
 # =========================
 def handle_mouse(event: int, x: int, y: int, flags: int, param: Any) -> None:
     del flags, param
@@ -438,7 +438,7 @@ def handle_mouse(event: int, x: int, y: int, flags: int, param: Any) -> None:
 
 
 # =========================
-# 相机与预处理
+# Camera and Preprocessing
 # =========================
 def configure_camera(cap: cv2.VideoCapture) -> Tuple[int, int, float]:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, PREFERRED_CAMERA_WIDTH)
@@ -453,9 +453,9 @@ def configure_camera(cap: cv2.VideoCapture) -> Tuple[int, int, float]:
 
 def preprocess_frame(frame_bgr: np.ndarray, input_width: int, input_height: int) -> Tuple[np.ndarray, torch.Tensor, ResizeMeta]:
     """
-    summary: 将 ROI 图像预处理为模型输入，采用与训练一致的 raw-resize 流程
-    param frame_bgr: 输入 ROI 的 BGR 图像
-    return: 灰度预览图、模型张量、预处理元信息
+    summary: Preprocess the ROI image into a model input using the same raw-resize pipeline as training
+    param frame_bgr: Input BGR image for the ROI
+    return: Grayscale preview image, model tensor, and preprocessing metadata
     """
     return preprocess_bgr_frame(
         frame_bgr=frame_bgr,
@@ -507,25 +507,25 @@ def predict_label_map(
 ) -> np.ndarray:
     if predictor.runtime_type == "pytorch":
         if predictor.torch_model is None:
-            raise RuntimeError("PyTorch predictor 未正确初始化。")
+            raise RuntimeError("PyTorch predictor is not properly initialized.")
         with autocast_context(device=device, use_amp=use_amp):
             logits = predictor.torch_model(input_tensor.to(device))
         return torch.argmax(logits, dim=1)[0].detach().cpu().numpy().astype(np.uint8)
 
     if predictor.runtime_type == "onnx":
         if predictor.onnx_session is None or predictor.onnx_input_name is None:
-            raise RuntimeError("ONNX predictor 未正确初始化。")
+            raise RuntimeError("ONNX predictor is not properly initialized.")
         logits = predictor.onnx_session.run(
             None,
             {predictor.onnx_input_name: input_tensor.cpu().numpy().astype(np.float32)},
         )[0]
         return np.argmax(logits, axis=1)[0].astype(np.uint8)
 
-    raise ValueError(f"不支持的 predictor runtime_type: {predictor.runtime_type}")
+    raise ValueError(f"Unsupported predictor runtime_type: {predictor.runtime_type}")
 
 
 # =========================
-# 分割与几何
+# Segmentation and Geometry
 # =========================
 def build_empty_geometry_result() -> GazeFeatureResult:
     return build_empty_gaze_feature_result()
@@ -546,7 +546,7 @@ def extract_eye_geometry_from_label_map(pred_label_map: np.ndarray) -> GazeFeatu
 
 
 # =========================
-# 可视化与坐标映射
+# Visualization and Coordinate Mapping
 # =========================
 def map_point_to_frame(x: float, y: float, preprocess_meta: ResizeMeta, roi_box: ROIBox) -> Tuple[int, int]:
     source_x = float(np.clip(x * preprocess_meta.scale_x, 0.0, max(preprocess_meta.source_width - 1.0, 0.0)))
@@ -868,12 +868,12 @@ def inspect_demo_video_source(video_path: str) -> tuple[cv2.VideoCapture, DemoVi
     source_path = Path(video_path).expanduser().resolve()
     cap = cv2.VideoCapture(str(source_path))
     if not cap.isOpened():
-        raise RuntimeError(f"无法打开演示 FPV 视频: {source_path}")
+        raise RuntimeError(f"Unable to open demo FPV video: {source_path}")
 
     ret, frame = cap.read()
     if not ret or frame is None or frame.size == 0:
         cap.release()
-        raise RuntimeError(f"演示 FPV 视频无法读取首帧: {source_path}")
+        raise RuntimeError(f"Unable to read the first frame from demo FPV video: {source_path}")
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -886,10 +886,10 @@ def inspect_demo_video_source(video_path: str) -> tuple[cv2.VideoCapture, DemoVi
 
     if width <= 0 or height <= 0:
         cap.release()
-        raise RuntimeError(f"演示 FPV 视频尺寸无效: {source_path}")
+        raise RuntimeError(f"Invalid demo FPV video dimensions: {source_path}")
     if fps <= 0.0:
         cap.release()
-        raise RuntimeError(f"演示 FPV 视频 FPS 无效: {source_path}")
+        raise RuntimeError(f"Invalid demo FPV video FPS: {source_path}")
 
     return cap, DemoVideoSourceInfo(
         path=str(source_path),
@@ -954,7 +954,7 @@ def create_mp4_video_writer(output_path: str, width: int, height: int, fps: floa
     if not writer.isOpened():
         writer.release()
         raise RuntimeError(
-            f"无法创建演示视频输出: {resolved_output_path} "
+            f"Unable to create demo video output: {resolved_output_path} "
             f"({int(width)}x{int(height)}@{float(fps):.2f}fps, codec={DEMO_VIDEO_CODEC})"
         )
     return writer
@@ -999,7 +999,7 @@ def finalize_optional_video_recording(
 
     close_error = close_demo_writer(writer)
     if close_error is not None:
-        return None, f"{result_label}时 writer 收尾失败: {close_error}"
+        return None, f"{result_label}: writer cleanup failed: {close_error}"
 
     output_name = "output.mp4" if output_path is None else Path(output_path).name
     return None, f"{result_label}: {output_name}"
@@ -1316,23 +1316,23 @@ def compose_calibration_output_frame(
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="实时眼动方向验证")
-    parser.add_argument("--model_path", type=str, default=None, help="待加载的模型路径，支持 .pth 与 .onnx")
-    parser.add_argument("--checkpoint_path", type=str, default=CHECKPOINT_PATH, help="兼容旧参数名；若未传 --model_path，则使用该路径")
-    parser.add_argument("--camera_index", type=int, default=CAMERA_INDEX, help="摄像头索引")
-    parser.add_argument("--demo_fpv_video", type=str, default=None, help="启用 PC 演示录制模式时使用的 FPV 视频路径")
-    parser.add_argument("--demo_output", type=str, default=None, help="演示录制模式导出路径；默认输出到 FPV 视频同目录")
-    parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
-    parser.add_argument("--onnx_backend", type=str, default="cpu", choices=["cpu", "nnapi"], help="ONNX Runtime backend，仅在 .onnx 模型时生效")
-    parser.add_argument("--feature_mode", type=str, choices=["pupil_iris", "iris_only"], default="pupil_iris", help="实时校准与跟踪使用的特征模式")
-    parser.add_argument("--calibration_settle_ms", type=int, default=DEFAULT_CALIBRATION_SETTLE_MS, help="校准点切换后的稳定等待时长")
-    parser.add_argument("--calibration_capture_ms", type=int, default=DEFAULT_CALIBRATION_CAPTURE_MS, help="每个校准点的采样时长")
-    parser.add_argument("--calibration_min_valid_frames", type=int, default=DEFAULT_CALIBRATION_MIN_VALID_FRAMES, help="每个校准点要求的最少有效帧数")
-    parser.add_argument("--calibration_margin", type=float, default=DEFAULT_CALIBRATION_MARGIN, help="四角校准点距边缘的归一化留白")
+    parser = argparse.ArgumentParser(description="Real-time eye-direction validation")
+    parser.add_argument("--model_path", type=str, default=None, help="Path to the model to load; supports .pth and .onnx")
+    parser.add_argument("--checkpoint_path", type=str, default=CHECKPOINT_PATH, help="Legacy argument name; used if --model_path is not provided")
+    parser.add_argument("--camera_index", type=int, default=CAMERA_INDEX, help="Camera index")
+    parser.add_argument("--demo_fpv_video", type=str, default=None, help="FPV video path used in PC demo recording mode")
+    parser.add_argument("--demo_output", type=str, default=None, help="Demo recording output path; defaults to the same directory as the FPV video")
+    parser.add_argument("--device", type=str, default="auto", help="Runtime device: auto/cpu/cuda")
+    parser.add_argument("--onnx_backend", type=str, default="cpu", choices=["cpu", "nnapi"], help="ONNX Runtime backend; only applies to .onnx models")
+    parser.add_argument("--feature_mode", type=str, choices=["pupil_iris", "iris_only"], default="pupil_iris", help="Feature mode used for real-time calibration and tracking")
+    parser.add_argument("--calibration_settle_ms", type=int, default=DEFAULT_CALIBRATION_SETTLE_MS, help="Stabilization wait time after a calibration point switch")
+    parser.add_argument("--calibration_capture_ms", type=int, default=DEFAULT_CALIBRATION_CAPTURE_MS, help="Sampling duration for each calibration point")
+    parser.add_argument("--calibration_min_valid_frames", type=int, default=DEFAULT_CALIBRATION_MIN_VALID_FRAMES, help="Minimum number of valid frames required for each calibration point")
+    parser.add_argument("--calibration_margin", type=float, default=DEFAULT_CALIBRATION_MARGIN, help="Normalized margin from the edge for corner calibration points")
 
     amp_group = parser.add_mutually_exclusive_group()
-    amp_group.add_argument("--amp", dest="amp", action="store_true", help="强制启用 CUDA AMP")
-    amp_group.add_argument("--no-amp", dest="amp", action="store_false", help="强制禁用 AMP")
+    amp_group.add_argument("--amp", dest="amp", action="store_true", help="Force enable CUDA AMP")
+    amp_group.add_argument("--no-amp", dest="amp", action="store_false", help="Force disable AMP")
     parser.set_defaults(amp=None)
 
     return parser.parse_args(argv)
@@ -1341,7 +1341,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 def resolve_runtime_model_config(model_path: str, amp_override: Optional[bool], onnx_backend: str) -> RuntimeModelConfig:
     model_file = Path(model_path)
     if not model_file.exists():
-        raise FileNotFoundError(f"未找到模型文件: {model_file}")
+        raise FileNotFoundError(f"Model file not found: {model_file}")
 
     if is_onnx_model_path(str(model_file)):
         runtime_config = resolve_onnx_runtime_config(model_path=str(model_file), onnx_backend=onnx_backend)
@@ -1388,7 +1388,7 @@ def build_runtime_predictor(runtime_config: RuntimeModelConfig, device: torch.de
             device=device,
             optimizer=None,
         )
-        print("checkpoint 信息:", load_info)
+        print("checkpoint info:", load_info)
         model.eval()
         return RuntimePredictor(runtime_type="pytorch", torch_model=model)
 
@@ -1405,7 +1405,7 @@ def build_runtime_predictor(runtime_config: RuntimeModelConfig, device: torch.de
             onnx_input_name=session.get_inputs()[0].name,
         )
 
-    raise ValueError(f"不支持的 runtime_type: {runtime_config.runtime_type}")
+    raise ValueError(f"Unsupported runtime_type: {runtime_config.runtime_type}")
 
 
 def print_runtime_config(runtime_config: RuntimeModelConfig, device: torch.device) -> None:
@@ -1426,7 +1426,7 @@ def print_runtime_config(runtime_config: RuntimeModelConfig, device: torch.devic
 
 
 # =========================
-# 主循环
+# Main Loop
 # =========================
 def main() -> None:
     args = parse_args()
@@ -1447,7 +1447,7 @@ def main() -> None:
 
     cap = cv2.VideoCapture(args.camera_index)
     if not cap.isOpened():
-        raise RuntimeError(f"无法打开摄像头: {args.camera_index}")
+        raise RuntimeError(f"Unable to open camera: {args.camera_index}")
 
     camera_width, camera_height, camera_fps = configure_camera(cap)
     print(f"camera resolution: {camera_width}x{camera_height}, fps={camera_fps:.1f}")
@@ -1472,9 +1472,9 @@ def main() -> None:
     displayed_screen_uv: Optional[Tuple[float, float]] = None
     last_valid_screen_ts_ms: Optional[float] = None
     tracking_valid = False
-    status_message = "请选择 ROI，然后按 s 开始九点校准。"
+    status_message = "Please select an ROI, then press s to start the nine-point calibration."
     if demo_mode_enabled:
-        status_message += f" 校准完成后按 {DEFAULT_DEMO_RECORD_KEY} 从头导出演示视频。"
+        status_message += f" After calibration completes, press {DEFAULT_DEMO_RECORD_KEY} to export the demo video from the beginning."
     last_roi_revision = ROI_STATE.roi_revision
     prev_time = time.time()
     demo_render_state = DEMO_RENDER_STATE_IDLE
@@ -1492,7 +1492,7 @@ def main() -> None:
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("摄像头读取失败。")
+                print("Camera read failed.")
                 break
 
             if USE_MIRROR_VIEW:
@@ -1509,7 +1509,7 @@ def main() -> None:
                 demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
                     demo_calibration_writer,
                     demo_calibration_output_path,
-                    "校准阶段视频已停止",
+                    "Calibration video recording stopped",
                 )
                 if calibration_video_message is not None:
                     print(calibration_video_message)
@@ -1528,7 +1528,7 @@ def main() -> None:
                 displayed_screen_uv = None
                 last_valid_screen_ts_ms = None
                 tracking_valid = False
-                status_message = "ROI 已更新，校准已失效。"
+                status_message = "ROI updated; calibration invalidated."
                 if calibration_video_message is not None:
                     status_message = f"{status_message} {calibration_video_message}"
 
@@ -1603,33 +1603,33 @@ def main() -> None:
 
                 if calibration_session.state != previous_state:
                     if calibration_session.state == "capturing":
-                        status_message = f"开始采样 {calibration_session.calibration_step}"
+                        status_message = f"Starting capture of {calibration_session.calibration_step}"
                     elif calibration_session.state == "settling":
-                        status_message = f"请注视 {calibration_session.calibration_step}"
+                        status_message = f"Please look at {calibration_session.calibration_step}"
                     elif calibration_session.state == "completed":
                         calibration_points = calibration_session.points
                         calibration_window_open = False
                         destroy_window(CALIBRATION_WINDOW_NAME)
-                        status_message = "九点校准完成。"
+                        status_message = "Nine-point calibration complete."
                         demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
                             demo_calibration_writer,
                             demo_calibration_output_path,
-                            "校准阶段视频已保存",
+                            "Calibration video recording saved",
                         )
                         demo_calibration_recording_blocked = False
                         if calibration_video_message is not None:
                             status_message = f"{status_message} {calibration_video_message}"
                         if demo_mode_enabled:
-                            status_message += f" 按 {DEFAULT_DEMO_RECORD_KEY} 从头导出演示视频。"
+                            status_message += f" Press {DEFAULT_DEMO_RECORD_KEY} to export the demo video from the beginning."
                         print(status_message)
                     elif calibration_session.state == "failed":
                         calibration_window_open = False
                         destroy_window(CALIBRATION_WINDOW_NAME)
-                        status_message = calibration_session.failure_reason or "校准失败。"
+                        status_message = calibration_session.failure_reason or "Calibration failed."
                         demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
                             demo_calibration_writer,
                             demo_calibration_output_path,
-                            "校准阶段视频已保存",
+                            "Calibration video recording saved",
                         )
                         demo_calibration_recording_blocked = False
                         if calibration_video_message is not None:
@@ -1661,11 +1661,11 @@ def main() -> None:
                                 height=calibration_preview_frame.shape[0],
                                 fps=calibration_record_fps,
                             )
-                            print(f"开始导出校准阶段视频: {Path(demo_calibration_output_path).name}")
+                            print(f"Starting calibration video export: {Path(demo_calibration_output_path).name}")
                         except Exception as exc:
                             demo_calibration_writer = None
                             demo_calibration_recording_blocked = True
-                            print(f"warning: 无法开始校准阶段视频导出: {exc}")
+                            print(f"warning: unable to start calibration video export: {exc}")
                     if demo_calibration_writer is not None:
                         demo_calibration_writer.write(calibration_preview_frame)
                 cv2.imshow(CALIBRATION_WINDOW_NAME, calibration_preview_frame)
@@ -1777,9 +1777,9 @@ def main() -> None:
                         demo_current_gaze_sample = None
                         demo_render_state = DEMO_RENDER_STATE_FINISHED
                         if stop_error is not None:
-                            status_message = f"演示视频导出结束，但 writer 收尾失败: {stop_error}"
+                            status_message = f"Demo video export ended, but writer cleanup failed: {stop_error}"
                         else:
-                            status_message = f"演示视频导出已完成: {Path(demo_output_path).name}"
+                            status_message = f"Demo video export completed: {Path(demo_output_path).name}"
                         print(status_message)
                         break
 
@@ -1809,9 +1809,9 @@ def main() -> None:
                         demo_current_gaze_sample = None
                         demo_render_state = DEMO_RENDER_STATE_FINISHED
                         if stop_error is not None:
-                            status_message = f"演示视频导出结束，但 writer 收尾失败: {stop_error}"
+                            status_message = f"Demo video export ended, but writer cleanup failed: {stop_error}"
                         else:
-                            status_message = f"演示视频导出已完成: {Path(demo_output_path).name}"
+                            status_message = f"Demo video export completed: {Path(demo_output_path).name}"
                         print(status_message)
                         break
 
@@ -1829,7 +1829,7 @@ def main() -> None:
                 demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
                     demo_calibration_writer,
                     demo_calibration_output_path,
-                    "校准阶段视频已停止",
+                    "Calibration video recording stopped",
                 )
                 if calibration_video_message is not None:
                     print(calibration_video_message)
@@ -1853,9 +1853,9 @@ def main() -> None:
                     demo_previous_gaze_sample = None
                     demo_current_gaze_sample = None
                     if stop_error is not None:
-                        status_message = f"停止演示导出时 writer 收尾失败: {stop_error}"
+                        status_message = f"Demo video export stopped, but writer cleanup failed: {stop_error}"
                     else:
-                        status_message = f"演示视频导出已停止: {Path(demo_output_path).name}"
+                        status_message = f"Demo video export stopped: {Path(demo_output_path).name}"
                     print(status_message)
                 elif start_error is not None:
                     status_message = start_error
@@ -1878,7 +1878,7 @@ def main() -> None:
                         demo_previous_gaze_sample = initial_gaze_sample
                         demo_current_gaze_sample = initial_gaze_sample
                         demo_render_state = DEMO_RENDER_STATE_RENDERING
-                        status_message = f"开始导出演示视频: {Path(demo_output_path).name}"
+                        status_message = f"Starting demo video export: {Path(demo_output_path).name}"
                     except Exception as exc:
                         demo_writer = None
                         demo_render_start_monotonic = None
@@ -1886,7 +1886,7 @@ def main() -> None:
                         demo_previous_gaze_sample = None
                         demo_current_gaze_sample = None
                         demo_render_state = DEMO_RENDER_STATE_FINISHED
-                        status_message = f"无法开始演示视频导出: {exc}"
+                        status_message = f"Unable to start demo video export: {exc}"
                     print(status_message)
             elif key == ord("r"):
                 stop_error = close_demo_writer(demo_writer)
@@ -1896,7 +1896,7 @@ def main() -> None:
                 demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
                     demo_calibration_writer,
                     demo_calibration_output_path,
-                    "校准阶段视频已停止",
+                    "Calibration video recording stopped",
                 )
                 demo_calibration_recording_blocked = False
                 demo_render_start_monotonic = None
@@ -1913,7 +1913,7 @@ def main() -> None:
                 displayed_screen_uv = None
                 last_valid_screen_ts_ms = None
                 tracking_valid = False
-                status_message = "已重置滤波与校准状态。"
+                status_message = "Filter and calibration state reset."
                 if calibration_video_message is not None:
                     status_message = f"{status_message} {calibration_video_message}"
                 print(status_message)
@@ -1925,7 +1925,7 @@ def main() -> None:
                 demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
                     demo_calibration_writer,
                     demo_calibration_output_path,
-                    "校准阶段视频已停止",
+                    "Calibration video recording stopped",
                 )
                 demo_calibration_recording_blocked = False
                 demo_render_start_monotonic = None
@@ -1943,13 +1943,13 @@ def main() -> None:
                 displayed_screen_uv = None
                 last_valid_screen_ts_ms = None
                 tracking_valid = False
-                status_message = "已清除 ROI，校准已失效。"
+                status_message = "ROI cleared; calibration invalidated."
                 if calibration_video_message is not None:
                     status_message = f"{status_message} {calibration_video_message}"
                 print(status_message)
             elif key == ord("s"):
                 if selected_roi is None or not selected_roi.is_valid():
-                    status_message = "请先框选有效 ROI，再开始校准。"
+                    status_message = "Please select a valid ROI before starting calibration."
                     print(status_message)
                 else:
                     stop_error = close_demo_writer(demo_writer)
@@ -1959,7 +1959,7 @@ def main() -> None:
                     demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
                         demo_calibration_writer,
                         demo_calibration_output_path,
-                        "校准阶段视频已停止",
+                        "Calibration video recording stopped",
                     )
                     if calibration_video_message is not None:
                         print(calibration_video_message)
@@ -1986,7 +1986,7 @@ def main() -> None:
                     tracking_valid = False
                     ensure_fullscreen_window(CALIBRATION_WINDOW_NAME)
                     calibration_window_open = True
-                    status_message = f"开始校准({args.feature_mode}): {calibration_session.calibration_step}"
+                    status_message = f"Starting calibration ({args.feature_mode}): {calibration_session.calibration_step}"
                     print(status_message)
             elif key == ord("x"):
                 if calibration_session is not None and calibration_session.is_active:
@@ -1997,7 +1997,7 @@ def main() -> None:
                     demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
                         demo_calibration_writer,
                         demo_calibration_output_path,
-                        "校准阶段视频已停止",
+                        "Calibration video recording stopped",
                     )
                     demo_calibration_recording_blocked = False
                     demo_render_start_monotonic = None
@@ -2006,13 +2006,13 @@ def main() -> None:
                     demo_previous_gaze_sample = None
                     demo_current_gaze_sample = None
                     demo_render_state = DEMO_RENDER_STATE_IDLE
-                    calibration_session = cancel_calibration_session(calibration_session, "已取消当前校准。")
+                    calibration_session = cancel_calibration_session(calibration_session, "Current calibration canceled.")
                     calibration_window_open = False
                     destroy_window(CALIBRATION_WINDOW_NAME)
                     displayed_screen_uv = None
                     last_valid_screen_ts_ms = None
                     tracking_valid = False
-                    status_message = calibration_session.failure_reason or "已取消当前校准。"
+                    status_message = calibration_session.failure_reason or "Current calibration canceled."
                     if calibration_video_message is not None:
                         status_message = f"{status_message} {calibration_video_message}"
                     print(status_message)
@@ -2023,7 +2023,7 @@ def main() -> None:
         demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
             demo_calibration_writer,
             demo_calibration_output_path,
-            "校准阶段视频已停止",
+            "Calibration video recording stopped",
         )
         if calibration_video_message is not None:
             print(calibration_video_message)
