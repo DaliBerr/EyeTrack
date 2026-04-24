@@ -12,9 +12,9 @@ from eyetrack.data.preprocessing import preprocess_gray_image, resize_binary_mas
 
 def read_gray_image(image_path: str) -> np.ndarray:
     """
-    summary: 读取灰度图并归一化到 0~1
-    param image_path: 图像路径
-    return: float32 的二维数组，shape 为 HxW
+    summary: read 0~1
+    param image_path: imagepath
+    return: float32 array, shape HxW
     """
     image = Image.open(image_path).convert("L")
     image = np.array(image, dtype=np.float32) / 255.0
@@ -23,9 +23,9 @@ def read_gray_image(image_path: str) -> np.ndarray:
 
 def read_label_npy(label_path: str) -> np.ndarray:
     """
-    summary: 读取分割标签 npy
-    param label_path: 标签路径
-    return: int64 的二维数组，shape 为 HxW
+    summary: read label npy
+    param label_path: labelpath
+    return: int64 array, shape HxW
     """
     label = np.load(label_path)
     label = label.astype(np.int64)
@@ -34,9 +34,9 @@ def read_label_npy(label_path: str) -> np.ndarray:
 
 def read_mask_png(mask_path: str) -> np.ndarray:
     """
-    summary: 读取二值 mask 并转为 0/1
-    param mask_path: mask 路径
-    return: uint8 的二维数组，shape 为 HxW
+    summary: read mask 0/1
+    param mask_path: mask path
+    return: uint8 array, shape HxW
     """
     mask = Image.open(mask_path).convert("L")
     mask = np.array(mask, dtype=np.uint8)
@@ -46,10 +46,10 @@ def read_mask_png(mask_path: str) -> np.ndarray:
 
 class OpenEDSSegDataset(Dataset):
     """
-    summary: OpenEDS 单帧语义分割数据集
-    param root_dir: 数据集根目录
-    param split: 数据划分，如 train/validation/test
-    return: 可供 PyTorch 读取的数据集对象
+    summary: OpenEDS dataset
+    param root_dir: dataset directory
+    param split:, train/validation/test
+    return: PyTorch read dataset
     """
 
     def __init__(
@@ -61,10 +61,10 @@ class OpenEDSSegDataset(Dataset):
         use_mask: bool = DEFAULT_USE_MASK,
     ):
         """
-        summary: 初始化数据集并收集样本 id
-        param root_dir: 数据集根目录
-        param split: 数据划分名称
-        return: 无
+        summary: dataset sample id
+        param root_dir: dataset directory
+        param split:
+        return: none
         """
         self.root_dir = Path(root_dir)
         self.split = split
@@ -77,22 +77,22 @@ class OpenEDSSegDataset(Dataset):
         self.mask_dir = self.root_dir / split / "masks"
 
         if not self.image_dir.exists():
-            raise FileNotFoundError(f"找不到图像目录: {self.image_dir}")
+            raise FileNotFoundError(f"not foundimagedirectory: {self.image_dir}")
         if not self.label_dir.exists():
-            raise FileNotFoundError(f"找不到标签目录: {self.label_dir}")
+            raise FileNotFoundError(f"not foundlabeldirectory: {self.label_dir}")
         if self.use_mask and not self.mask_dir.exists():
-            raise FileNotFoundError(f"找不到 mask 目录: {self.mask_dir}")
+            raise FileNotFoundError(f"not found mask directory: {self.mask_dir}")
 
         self.sample_ids = self._collect_sample_ids()
 
         if len(self.sample_ids) == 0:
-            raise RuntimeError(f"{split} 中没有找到可用样本")
+            raise RuntimeError(f"{split} sample")
 
     def _collect_sample_ids(self) -> List[str]:
         """
-        summary: 收集可用样本编号
-        param self: 数据集实例
-        return: 样本编号列表
+        summary: sample
+        param self: dataset
+        return: sample list
         """
         image_paths = sorted(self.image_dir.glob("*.png"))
         sample_ids = []
@@ -117,17 +117,17 @@ class OpenEDSSegDataset(Dataset):
 
     def __len__(self) -> int:
         """
-        summary: 返回样本数量
-        param self: 数据集实例
-        return: 数据集长度
+        summary: returnsamplecount
+        param self: dataset
+        return: dataset
         """
         return len(self.sample_ids)
 
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor | str]:
         """
-        summary: 读取单个样本并转为张量
-        param index: 样本索引
-        return: 包含 image、label、mask、id 的字典
+        summary: read sample
+        param index: sampleindex
+        return: image, label, mask, id dict
         """
         sample_id = self.sample_ids[index]
 

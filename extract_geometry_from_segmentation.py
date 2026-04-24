@@ -16,18 +16,18 @@ from eyetrack.gaze import (
 
 def natural_key(text: str) -> List[Any]:
     """
-    summary: 生成自然排序键
-    param text: 输入字符串
-    return: 可用于排序的键列表
+    summary:
+    param text: input
+    return: list
     """
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
 
 
 def ensure_dir(dir_path: Optional[str]) -> None:
     """
-    summary: 若目录路径非空则确保目录存在
-    param dir_path: 目录路径
-    return: 无
+    summary: directorypath directory
+    param dir_path: directorypath
+    return: none
     """
     if dir_path:
         os.makedirs(dir_path, exist_ok=True)
@@ -35,9 +35,9 @@ def ensure_dir(dir_path: Optional[str]) -> None:
 
 def list_prediction_files(pred_dir: str) -> List[str]:
     """
-    summary: 列出预测目录中的所有分割结果文件
-    param pred_dir: 分割结果目录
-    return: 排序后的文件路径列表
+    summary: predictiondirectory file
+    param pred_dir: directory
+    return: filepathlist
     """
     valid_exts = {".npy", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
     file_list = []
@@ -55,10 +55,10 @@ def list_prediction_files(pred_dir: str) -> List[str]:
 
 def find_matching_file_by_stem(folder: Optional[str], stem: str) -> Optional[str]:
     """
-    summary: 在指定目录中查找与 stem 同名的图像文件
-    param folder: 目录路径
-    param stem: 文件主名
-    return: 若存在则返回文件路径，否则返回 None
+    summary: directory stem imagefile
+    param folder: directorypath
+    param stem: file
+    return: returnfilepath, return None
     """
     if folder is None:
         return None
@@ -83,34 +83,34 @@ def find_matching_file_by_stem(folder: Optional[str], stem: str) -> Optional[str
 
 def read_gray_image(image_path: str) -> np.ndarray:
     """
-    summary: 读取灰度图像
-    param image_path: 图像路径
-    return: uint8 灰度图，shape 为 HxW
+    summary: read image
+    param image_path: imagepath
+    return: uint8, shape HxW
     """
     image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if image is None:
-        raise FileNotFoundError(f"无法读取图像文件: {image_path}")
+        raise FileNotFoundError(f"unable toreadimagefile: {image_path}")
     return image
 
 
 def read_binary_mask(mask_path: str) -> np.ndarray:
     """
-    summary: 读取二值 mask 并转为 0/1
-    param mask_path: mask 路径
-    return: uint8 二值图，shape 为 HxW，取值为 0 或 1
+    summary: read mask 0/1
+    param mask_path: mask path
+    return: uint8, shape HxW, 0 1
     """
     ext = os.path.splitext(mask_path)[1].lower()
 
     if ext == ".npy":
         mask = np.load(mask_path)
         if mask.ndim != 2:
-            raise ValueError(f"mask 维度不是 2D: {mask_path}, shape={mask.shape}")
+            raise ValueError(f"mask 2D: {mask_path}, shape={mask.shape}")
         mask = (mask > 0).astype(np.uint8)
         return mask
 
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
     if mask is None:
-        raise FileNotFoundError(f"无法读取 mask 文件: {mask_path}")
+        raise FileNotFoundError(f"unable toread mask file: {mask_path}")
 
     mask = (mask > 0).astype(np.uint8)
     return mask
@@ -118,21 +118,21 @@ def read_binary_mask(mask_path: str) -> np.ndarray:
 
 def read_label_map(label_path: str) -> np.ndarray:
     """
-    summary: 读取分割标签图，支持 npy 与普通灰度图
-    param label_path: 标签图路径
-    return: uint8 标签图，shape 为 HxW
+    summary: read label, supports npy
+    param label_path: label path
+    return: uint8 label, shape HxW
     """
     ext = os.path.splitext(label_path)[1].lower()
 
     if ext == ".npy":
         label = np.load(label_path)
         if label.ndim != 2:
-            raise ValueError(f"标签图维度不是 2D: {label_path}, shape={label.shape}")
+            raise ValueError(f"label 2D: {label_path}, shape={label.shape}")
         return label.astype(np.uint8)
 
     label = cv2.imread(label_path, cv2.IMREAD_GRAYSCALE)
     if label is None:
-        raise FileNotFoundError(f"无法读取标签图文件: {label_path}")
+        raise FileNotFoundError(f"unable toreadlabel file: {label_path}")
     return label.astype(np.uint8)
 
 
@@ -146,15 +146,15 @@ def extract_eye_geometry_from_label_map(
     pupil_min_area: int
 ) -> GazeFeatureResult:
     """
-    summary: 从预测标签图中提取 iris 与 pupil 的几何参数
-    param pred_label_map: 输入预测标签图
-    param valid_mask: 可选有效区域 mask
-    param iris_class_id: 虹膜类别编号
-    param pupil_class_id: 瞳孔类别编号
-    param kernel_size: 形态学核大小
-    param iris_min_area: iris 最小面积阈值
-    param pupil_min_area: pupil 最小面积阈值
-    return: 包含几何结果与中间 mask 的字典
+    summary: predictionlabel iris pupil arguments
+    param pred_label_map: inputpredictionlabel
+    param valid_mask: optionalvalid mask
+    param iris_class_id: irisclass
+    param pupil_class_id: pupilclass
+    param kernel_size:
+    param iris_min_area: iris minimum threshold
+    param pupil_min_area: pupil minimum threshold
+    return: mask dict
     """
     return extract_gaze_features_from_label_map(
         pred_label_map=pred_label_map,
@@ -169,10 +169,10 @@ def extract_eye_geometry_from_label_map(
 
 def ellipse_to_row(prefix: str, ellipse: Optional[EllipseResult]) -> Dict[str, Any]:
     """
-    summary: 将椭圆对象转为 csv 行字段
-    param prefix: 字段名前缀
-    param ellipse: 椭圆对象
-    return: 字典形式的字段
+    summary: csv
+    param prefix:
+    param ellipse:
+    return: dict
     """
     if ellipse is None:
         return {
@@ -194,10 +194,10 @@ def ellipse_to_row(prefix: str, ellipse: Optional[EllipseResult]) -> Dict[str, A
 
 def region_to_row(prefix: str, region: RegionGeometry) -> Dict[str, Any]:
     """
-    summary: 将区域几何对象转为 csv 行字段
-    param prefix: 字段名前缀
-    param region: 区域几何对象
-    return: 字典形式的字段
+    summary: csv
+    param prefix:
+    param region:
+    return: dict
     """
     row = {
         f"{prefix}_area": region.area,
@@ -211,10 +211,10 @@ def region_to_row(prefix: str, region: RegionGeometry) -> Dict[str, Any]:
 
 def build_csv_row(frame_id: str, result: GazeFeatureResult) -> Dict[str, Any]:
     """
-    summary: 将单帧几何结果整理为 csv 行
-    param frame_id: 帧编号
-    param result: 几何结果字典
-    return: csv 行字段字典
+    summary: csv
+    param frame_id:
+    param result: dict
+    return: csv dict
     """
     row = {"frame_id": frame_id}
 
@@ -235,12 +235,12 @@ def build_csv_row(frame_id: str, result: GazeFeatureResult) -> Dict[str, Any]:
 
 def draw_ellipse(canvas: np.ndarray, ellipse: Optional[EllipseResult], color: Tuple[int, int, int], thickness: int) -> np.ndarray:
     """
-    summary: 在图像上绘制椭圆
-    param canvas: 输入彩色画布
-    param ellipse: 椭圆对象
-    param color: BGR 颜色
-    param thickness: 线宽
-    return: 绘制后的图像
+    summary: image
+    param canvas: input
+    param ellipse:
+    param color: BGR
+    param thickness:
+    return: image
     """
     output = canvas.copy()
 
@@ -268,13 +268,13 @@ def draw_ellipse(canvas: np.ndarray, ellipse: Optional[EllipseResult], color: Tu
 
 def draw_center(canvas: np.ndarray, center_x: Optional[float], center_y: Optional[float], color: Tuple[int, int, int], radius: int) -> np.ndarray:
     """
-    summary: 在图像上绘制中心点
-    param canvas: 输入彩色画布
-    param center_x: 中心点 x 坐标
-    param center_y: 中心点 y 坐标
-    param color: BGR 颜色
-    param radius: 点半径
-    return: 绘制后的图像
+    summary: image
+    param canvas: input
+    param center_x: x
+    param center_y: y
+    param color: BGR
+    param radius:
+    return: image
     """
     output = canvas.copy()
 
@@ -293,12 +293,12 @@ def draw_center(canvas: np.ndarray, center_x: Optional[float], center_y: Optiona
 
 def overlay_mask_contour(canvas: np.ndarray, binary_mask: np.ndarray, color: Tuple[int, int, int], thickness: int) -> np.ndarray:
     """
-    summary: 在图像上叠加二值区域轮廓
-    param canvas: 输入彩色画布
-    param binary_mask: 二值区域
-    param color: BGR 颜色
-    param thickness: 线宽
-    return: 绘制后的图像
+    summary: image
+    param canvas: input
+    param binary_mask:
+    param color: BGR
+    param thickness:
+    return: image
     """
     output = canvas.copy()
 
@@ -311,11 +311,11 @@ def overlay_mask_contour(canvas: np.ndarray, binary_mask: np.ndarray, color: Tup
 
 def make_overlay_image(gray_image: np.ndarray, result: GazeFeatureResult, frame_id: str) -> np.ndarray:
     """
-    summary: 生成几何参数叠加可视化图
-    param gray_image: 原始灰度图
-    param result: 几何结果字典
-    param frame_id: 当前帧编号
-    return: BGR 彩色叠加图
+    summary: arguments
+    param gray_image:
+    param result: dict
+    param frame_id: current
+    return: BGR
     """
     canvas = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
 
@@ -363,23 +363,23 @@ def make_overlay_image(gray_image: np.ndarray, result: GazeFeatureResult, frame_
 
 def save_binary_mask(mask: np.ndarray, save_path: str) -> None:
     """
-    summary: 保存二值图到 png 文件
-    param mask: 输入二值图
-    param save_path: 保存路径
-    return: 无
+    summary: save png file
+    param mask: input
+    param save_path: savepath
+    return: none
     """
     cv2.imwrite(save_path, (mask * 255).astype(np.uint8))
 
 
 def write_csv_rows(rows: List[Dict[str, Any]], csv_path: str) -> None:
     """
-    summary: 将所有结果行写入 csv
-    param rows: 结果行列表
-    param csv_path: 输出 csv 路径
-    return: 无
+    summary: csv
+    param rows: list
+    param csv_path: output csv path
+    return: none
     """
     if len(rows) == 0:
-        raise RuntimeError("没有可写入 csv 的结果行。")
+        raise RuntimeError("No result rows available to write into CSV.")
 
     ensure_dir(os.path.dirname(csv_path) if os.path.dirname(csv_path) else ".")
 
@@ -407,26 +407,26 @@ def process_prediction_directory(
     save_clean_masks: bool
 ) -> None:
     """
-    summary: 批量处理预测目录并导出几何参数
-    param pred_dir: 分割结果目录
-    param output_csv: 输出 csv 路径
-    param image_dir: 原图目录，可为 None
-    param mask_dir: 有效区域目录，可为 None
-    param overlay_dir: 叠加图保存目录，可为 None
-    param clean_mask_dir: 清理后二值图保存目录，可为 None
-    param iris_class_id: iris 类别编号
-    param pupil_class_id: pupil 类别编号
-    param kernel_size: 形态学核大小
-    param iris_min_area: iris 最小面积阈值
-    param pupil_min_area: pupil 最小面积阈值
-    param save_overlay: 是否保存叠加图
-    param save_clean_masks: 是否保存清理后的二值图
-    return: 无
+    summary: batchprocesspredictiondirectory arguments
+    param pred_dir: directory
+    param output_csv: output csv path
+    param image_dir: directory, None
+    param mask_dir: valid directory, None
+    param overlay_dir: savedirectory, None
+    param clean_mask_dir: savedirectory, None
+    param iris_class_id: iris class
+    param pupil_class_id: pupil class
+    param kernel_size:
+    param iris_min_area: iris minimum threshold
+    param pupil_min_area: pupil minimum threshold
+    param save_overlay: save
+    param save_clean_masks: save
+    return: none
     """
     pred_files = list_prediction_files(pred_dir)
 
     if len(pred_files) == 0:
-        raise RuntimeError(f"在目录中没有找到分割结果文件: {pred_dir}")
+        raise RuntimeError(f" directory file: {pred_dir}")
 
     if save_overlay:
         ensure_dir(overlay_dir)
@@ -435,7 +435,7 @@ def process_prediction_directory(
     pupil_mask_save_dir = None
     if save_clean_masks:
         if clean_mask_dir is None:
-            raise ValueError("save_clean_masks=True 时，clean_mask_dir 不能为空。")
+            raise ValueError("save_clean_masks=True, clean_mask_dir.")
         iris_mask_save_dir = os.path.join(clean_mask_dir, "iris")
         pupil_mask_save_dir = os.path.join(clean_mask_dir, "pupil")
         ensure_dir(iris_mask_save_dir)
@@ -501,50 +501,50 @@ def process_prediction_directory(
         )
 
     write_csv_rows(rows, output_csv)
-    print(f"\n已完成，csv 已保存到: {output_csv}")
+    print(f"\nCompleted, csv save: {output_csv}")
 
     if save_overlay and overlay_dir is not None:
-        print(f"叠加图目录: {overlay_dir}")
+        print(f" directory: {overlay_dir}")
 
     if save_clean_masks and clean_mask_dir is not None:
-        print(f"清理后二值图目录: {clean_mask_dir}")
+        print(f" directory: {clean_mask_dir}")
 
 
 def parse_args() -> argparse.Namespace:
     """
-    summary: 解析命令行参数
-    param 无: 无
-    return: 参数对象
+    summary: parseCLIarguments
+    param none: none
+    return: arguments
     """
-    parser = argparse.ArgumentParser(description="从分割结果中提取 iris/pupil 几何参数")
+    parser = argparse.ArgumentParser(description=" iris/pupil arguments")
 
-    parser.add_argument("--pred_dir", type=str, required=True, help="分割结果目录，支持 npy/png")
-    parser.add_argument("--output_csv", type=str, required=True, help="输出 csv 路径")
+    parser.add_argument("--pred_dir", type=str, required=True, help=" directory, supports npy/png")
+    parser.add_argument("--output_csv", type=str, required=True, help="output csv path")
 
-    parser.add_argument("--image_dir", type=str, default=None, help="原图目录，可选")
-    parser.add_argument("--mask_dir", type=str, default=None, help="有效区域 mask 目录，可选")
+    parser.add_argument("--image_dir", type=str, default=None, help=" directory, optional")
+    parser.add_argument("--mask_dir", type=str, default=None, help="valid mask directory, optional")
 
-    parser.add_argument("--overlay_dir", type=str, default=None, help="叠加图输出目录")
-    parser.add_argument("--clean_mask_dir", type=str, default=None, help="清理后二值图输出目录")
+    parser.add_argument("--overlay_dir", type=str, default=None, help=" outputdirectory")
+    parser.add_argument("--clean_mask_dir", type=str, default=None, help=" outputdirectory")
 
-    parser.add_argument("--save_overlay", action="store_true", help="是否保存叠加图")
-    parser.add_argument("--save_clean_masks", action="store_true", help="是否保存清理后二值图")
+    parser.add_argument("--save_overlay", action="store_true", help=" save ")
+    parser.add_argument("--save_clean_masks", action="store_true", help=" save ")
 
-    parser.add_argument("--iris_class_id", type=int, default=2, help="iris 类别编号")
-    parser.add_argument("--pupil_class_id", type=int, default=3, help="pupil 类别编号")
+    parser.add_argument("--iris_class_id", type=int, default=2, help="iris class ")
+    parser.add_argument("--pupil_class_id", type=int, default=3, help="pupil class ")
 
-    parser.add_argument("--kernel_size", type=int, default=3, help="形态学核大小")
-    parser.add_argument("--iris_min_area", type=int, default=100, help="iris 最小面积阈值")
-    parser.add_argument("--pupil_min_area", type=int, default=20, help="pupil 最小面积阈值")
+    parser.add_argument("--kernel_size", type=int, default=3, help=" ")
+    parser.add_argument("--iris_min_area", type=int, default=100, help="iris minimum threshold")
+    parser.add_argument("--pupil_min_area", type=int, default=20, help="pupil minimum threshold")
 
     return parser.parse_args()
 
 
 def main() -> None:
     """
-    summary: 主函数，批量处理分割结果并导出几何参数
-    param 无: 无
-    return: 无
+    summary: main function, batchprocess arguments
+    param none: none
+    return: none
     """
     args = parse_args()
 

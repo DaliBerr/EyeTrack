@@ -15,7 +15,7 @@ def ensure_quantized_onnx_model(model_path: str) -> None:
     model = onnx.load(model_path)
     op_types = {node.op_type for node in model.graph.node}
     if "QuantizeLinear" not in op_types and "DequantizeLinear" not in op_types:
-        raise RuntimeError(f"树莓派实时脚本只接受量化 ONNX 模型，但该模型不像 QDQ INT8 ONNX: {model_path}")
+        raise RuntimeError(f"Raspberry Pi realtime script only accepts quantized ONNX models, but this model does not look like QDQ INT8 ONNX: {model_path}")
 
 
 @dataclass(frozen=True)
@@ -39,11 +39,11 @@ class PiOnnxSegmentationRuntime:
     def __init__(self, model_path: str, backend: str = "cpu"):
         model_file = Path(model_path)
         if model_file.suffix.lower() != ".onnx":
-            raise RuntimeError(f"树莓派实时脚本仅支持 .onnx 模型，当前路径: {model_path}")
+            raise RuntimeError(f"Raspberry Pi realtime script only supports .onnx models, current path: {model_path}")
         if not model_file.exists():
-            raise FileNotFoundError(f"未找到 ONNX 模型: {model_file}")
+            raise FileNotFoundError(f"ONNX model not found: {model_file}")
         if backend != "cpu":
-            raise RuntimeError(f"树莓派实时脚本当前仅支持 ONNX Runtime CPU backend，收到: {backend}")
+            raise RuntimeError(f"Raspberry Pi realtime script currently supports only ONNX Runtime CPU backend, got: {backend}")
 
         ensure_quantized_onnx_model(str(model_file))
         self.session = build_onnx_session(model_path=str(model_file), backend=backend, enable_profiling=False)
@@ -60,7 +60,7 @@ class PiOnnxSegmentationRuntime:
         )
 
         if self.info.input_channels != 1:
-            raise RuntimeError(f"树莓派实时脚本只支持单通道灰度模型，当前模型通道数: {self.info.input_channels}")
+            raise RuntimeError(f"Raspberry Pi realtime script supports only single-channel grayscale models, current model channels: {self.info.input_channels}")
 
     @property
     def input_width(self) -> int:

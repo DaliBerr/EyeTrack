@@ -33,14 +33,14 @@ def run_visualization_only(
     device: str = "auto",
 ) -> None:
     """
-    summary: 仅加载模型并在验证集上保存预测可视化
-    param root_dir: 数据集根目录
-    param checkpoint_path: 模型 checkpoint 路径
-    param save_dir: 可视化结果目录
-    param batch_size: 验证批大小
-    param num_workers: DataLoader 进程数
-    param num_samples: 最多保存样本数
-    return: 无
+    summary: model validation saveprediction
+    param root_dir: dataset directory
+    param checkpoint_path: model checkpoint path
+    param save_dir: directory
+    param batch_size: validationbatch
+    param num_workers: DataLoader
+    param num_samples: savesample
+    return: none
     """
     torch_device = resolve_device(device)
     resolved_model_metadata = resolve_model_metadata(
@@ -83,7 +83,7 @@ def run_visualization_only(
         optimizer=None,
     )
 
-    print("checkpoint 信息:", load_info)
+    print("checkpoint info:", load_info)
 
     visualize_predictions(
         model=model,

@@ -5,18 +5,18 @@ import torch.nn.functional as F
 
 class DoubleConv(nn.Module):
     """
-    summary: 连续两次卷积的基础模块
-    param in_channels: 输入通道数
-    param out_channels: 输出通道数
-    return: 无
+    summary:
+    param in_channels: input
+    param out_channels: output
+    return: none
     """
 
     def __init__(self, in_channels: int, out_channels: int):
         """
-        summary: 初始化双卷积模块
-        param in_channels: 输入通道数
-        param out_channels: 输出通道数
-        return: 无
+        summary:
+        param in_channels: input
+        param out_channels: output
+        return: none
         """
         super().__init__()
         self.block = nn.Sequential(
@@ -30,27 +30,40 @@ class DoubleConv(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        summary: 前向传播
-        param x: 输入特征图
-        return: 输出特征图
+        summary:
+        param x: input
+        return: output
         """
         return self.block(x)
+
+    def fuse_model(self, is_qat: bool = True) -> None:
+        """
+        summary: Conv-BN-ReLU quantizationtraining inference
+        param is_qat: QAT
+        return: none
+        """
+        fusion_spec = [["0", "1", "2"], ["3", "4", "5"]]
+        if is_qat and hasattr(torch.ao.quantization, "fuse_modules_qat"):
+            torch.ao.quantization.fuse_modules_qat(self.block, fusion_spec, inplace=True)
+            return
+
+        torch.ao.quantization.fuse_modules(self.block, fusion_spec, inplace=True)
 
 
 class Down(nn.Module):
     """
-    summary: U-Net 下采样模块
-    param in_channels: 输入通道数
-    param out_channels: 输出通道数
-    return: 无
+    summary: U-Net
+    param in_channels: input
+    param out_channels: output
+    return: none
     """
 
     def __init__(self, in_channels: int, out_channels: int):
         """
-        summary: 初始化下采样模块
-        param in_channels: 输入通道数
-        param out_channels: 输出通道数
-        return: 无
+        summary:
+        param in_channels: input
+        param out_channels: output
+        return: none
         """
         super().__init__()
         self.pool = nn.MaxPool2d(kernel_size=2)
@@ -58,9 +71,9 @@ class Down(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        summary: 前向传播
-        param x: 输入特征图
-        return: 输出特征图
+        summary:
+        param x: input
+        return: output
         """
         x = self.pool(x)
         x = self.conv(x)
@@ -69,20 +82,20 @@ class Down(nn.Module):
 
 class Up(nn.Module):
     """
-    summary: U-Net 上采样模块
-    param in_channels: 输入特征通道数
-    param skip_channels: 跳连特征通道数
-    param out_channels: 输出通道数
-    return: 无
+    summary: U-Net
+    param in_channels: input
+    param skip_channels:
+    param out_channels: output
+    return: none
     """
 
     def __init__(self, in_channels: int, skip_channels: int, out_channels: int):
         """
-        summary: 初始化上采样模块
-        param in_channels: 输入特征通道数
-        param skip_channels: 跳连特征通道数
-        param out_channels: 输出通道数
-        return: 无
+        summary:
+        param in_channels: input
+        param skip_channels:
+        param out_channels: output
+        return: none
         """
         super().__init__()
         self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
@@ -90,10 +103,10 @@ class Up(nn.Module):
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         """
-        summary: 前向传播并融合跳连特征
-        param x: 解码器输入特征
-        param skip: 编码器跳连特征
-        return: 融合后的输出特征
+        summary:
+        param x: input
+        param skip:
+        return: output
         """
         x = self.up(x)
 
@@ -112,20 +125,20 @@ class Up(nn.Module):
 
 class UNet(nn.Module):
     """
-    summary: 用于多类语义分割的 U-Net 网络
-    param in_channels: 输入通道数
-    param num_classes: 输出类别数
-    param base_channels: 基础通道数
-    return: 无
+    summary: U-Net
+    param in_channels: input
+    param num_classes: outputclass
+    param base_channels:
+    return: none
     """
 
     def __init__(self, in_channels: int = 1, num_classes: int = 4, base_channels: int = 32):
         """
-        summary: 初始化 U-Net
-        param in_channels: 输入通道数
-        param num_classes: 输出类别数
-        param base_channels: 基础通道数
-        return: 无
+        summary: U-Net
+        param in_channels: input
+        param num_classes: outputclass
+        param base_channels:
+        return: none
         """
         super().__init__()
 
@@ -144,9 +157,9 @@ class UNet(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        summary: 前向传播，输出每个类别的 logits
-        param x: 输入图像张量
-        return: 分割 logits
+        summary:, output class logits
+        param x: inputimage
+        return: logits
         """
         x1 = self.inc(x)
         x2 = self.down1(x1)
@@ -161,3 +174,19 @@ class UNet(nn.Module):
 
         logits = self.outc(x)
         return logits
+
+    def fuse_model(self, is_qat: bool = True) -> None:
+        """
+        summary: U-Net
+        param is_qat: QAT
+        return: none
+        """
+        self.inc.fuse_model(is_qat=is_qat)
+        self.down1.conv.fuse_model(is_qat=is_qat)
+        self.down2.conv.fuse_model(is_qat=is_qat)
+        self.down3.conv.fuse_model(is_qat=is_qat)
+        self.down4.conv.fuse_model(is_qat=is_qat)
+        self.up1.conv.fuse_model(is_qat=is_qat)
+        self.up2.conv.fuse_model(is_qat=is_qat)
+        self.up3.conv.fuse_model(is_qat=is_qat)
+        self.up4.conv.fuse_model(is_qat=is_qat)

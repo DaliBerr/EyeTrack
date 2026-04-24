@@ -15,25 +15,30 @@ def require_gstreamer():
         from gi.repository import GLib, Gst, GstRtspServer
     except ImportError as exc:
         raise RuntimeError(
-            "缺少 GStreamer Python 绑定。请在树莓派上安装 python3-gi、gir1.2-gst-rtsp-server-1.0 与相关 gstreamer 插件。"
+            "Missing GStreamer Python bindings. Install python3-gi, gir1.2-gst-rtsp-server-1.0, and related gstreamer plugins on Raspberry Pi."
         ) from exc
 
     Gst.init(None)
     return GLib, Gst, GstRtspServer
 
 
-def resolve_h264_encoder_name(Gst) -> str:
-    for encoder_name in ("v4l2h264enc", "v4l2slh264enc", "omxh264enc", "x264enc"):
+def resolve_h264_encoder_name(Gst, allow_software_fallback: bool = True) -> str:
+    encoder_candidates = ["v4l2h264enc", "v4l2slh264enc", "omxh264enc"]
+    if allow_software_fallback:
+        encoder_candidates.append("x264enc")
+
+    for encoder_name in encoder_candidates:
         if Gst.ElementFactory.find(encoder_name) is not None:
             return encoder_name
-    raise RuntimeError("未找到可用的 H.264 编码器，请安装对应的 GStreamer encoder 插件。")
+    raise RuntimeError("No available H.264 encoder found. Install the required GStreamer encoder plugins.")
 
 
 def build_h264_encoder_fragment(encoder_name: str, fps: int, bitrate_kbps: int) -> str:
     if encoder_name == "x264enc":
         return (
             f"x264enc tune=zerolatency speed-preset=ultrafast bitrate={int(bitrate_kbps)} "
-            f"key-int-max={max(int(fps), 1)} ! h264parse"
+            f"key-int-max={max(int(fps), 1)} bframes=0 cabac=false sliced-threads=true threads=2 byte-stream=true "
+            f"! h264parse"
         )
     return f"{encoder_name} ! h264parse"
 
@@ -99,7 +104,7 @@ class RtspVideoServer:
         element = media.get_element()
         appsrc = element.get_child_by_name("src")
         if appsrc is None:
-            raise RuntimeError("RTSP pipeline 中未找到 appsrc。")
+            raise RuntimeError("appsrc was not found in the RTSP pipeline.")
         appsrc.set_property("format", self.Gst.Format.TIME)
         appsrc.set_property("is-live", True)
         appsrc.set_property("block", False)
@@ -125,7 +130,7 @@ class RtspVideoServer:
             return False
         if frame_bgr.shape[:2] != (self.height, self.width):
             raise ValueError(
-                f"RTSP 输出帧尺寸不匹配，期望 {(self.height, self.width)}，实际 {frame_bgr.shape[:2]}"
+                f"RTSP output, {(self.height, self.width)}, {frame_bgr.shape[:2]}"
             )
 
         with self._push_lock:

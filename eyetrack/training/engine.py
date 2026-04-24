@@ -16,9 +16,9 @@ from eyetrack.runtime import autocast_context, should_enable_amp
 
 def format_metric_for_postfix(value: float) -> str:
     """
-    summary: 将指标值格式化为进度条可读字符串
-    param value: 指标数值
-    return: 格式化字符串
+    summary:
+    param value:
+    return:
     """
     if math.isnan(value):
         return "n/a"
@@ -37,13 +37,13 @@ def train_one_epoch(
     scaler: torch.cuda.amp.GradScaler | None = None,
 ) -> Dict[str, float]:
     """
-    summary: 执行一轮训练
-    param model: 分割模型
-    param dataloader: 训练数据加载器
-    param optimizer: 优化器
-    param criterion: 损失函数
-    param device: 训练设备
-    return: 本轮训练指标字典
+    summary: training
+    param model: model
+    param dataloader: training
+    param optimizer:
+    param criterion:
+    param device: training
+    return: training dict
     """
     model.train()
 
@@ -121,12 +121,12 @@ def validate_one_epoch(
     num_classes: int = 4,
 ) -> Dict[str, float]:
     """
-    summary: 执行一轮验证
-    param model: 分割模型
-    param dataloader: 验证数据加载器
-    param criterion: 损失函数
-    param device: 训练设备
-    return: 本轮验证指标字典
+    summary: validation
+    param model: model
+    param dataloader: validation
+    param criterion:
+    param device: training
+    return: validation dict
     """
     model.eval()
 

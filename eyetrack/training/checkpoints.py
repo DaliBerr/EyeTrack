@@ -11,10 +11,43 @@ from eyetrack.config import (
     DEFAULT_INPUT_WIDTH,
     DEFAULT_NUM_CLASSES,
     DEFAULT_PREPROCESS_MODE,
+    DEFAULT_QAT_BACKEND,
+    DEFAULT_QUANTIZATION_MODE,
     DEFAULT_USE_AMP,
     DEFAULT_USE_MASK,
     build_model_metadata,
 )
+
+
+def _load_state_dict_flexible(
+    model: nn.Module,
+    state_dict: Dict[str, Any],
+    allow_partial_state_dict: bool,
+) -> Dict[str, Any]:
+    """
+    summary: state_dict, strict=False
+    param model: model
+    param state_dict: arguments
+    param allow_partial_state_dict: partial load
+    return:
+    """
+    try:
+        model.load_state_dict(state_dict)
+        return {
+            "partial_load": False,
+            "missing_keys": [],
+            "unexpected_keys": [],
+        }
+    except RuntimeError:
+        if not allow_partial_state_dict:
+            raise
+
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    return {
+        "partial_load": True,
+        "missing_keys": list(incompatible.missing_keys),
+        "unexpected_keys": list(incompatible.unexpected_keys),
+    }
 
 
 def save_full_checkpoint(
@@ -26,13 +59,13 @@ def save_full_checkpoint(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
-    summary: 保存完整 checkpoint 以支持断点续训
-    param model: 当前模型
-    param optimizer: 当前优化器
-    param epoch: 当前训练轮数
-    param best_val_loss: 当前最佳验证损失
-    param save_path: checkpoint 保存路径
-    return: 无
+    summary: save checkpoint supports
+    param model: currentmodel
+    param optimizer: current
+    param epoch: currenttraining
+    param best_val_loss: current validation
+    param save_path: checkpoint savepath
+    return: none
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
@@ -53,22 +86,28 @@ def load_checkpoint_flexible(
     device: torch.device,
     optimizer: Optional[torch.optim.Optimizer] = None,
     fallback_start_epoch: int = 1,
-    fallback_best_val_loss: float = float("inf")
+    fallback_best_val_loss: float = float("inf"),
+    allow_partial_state_dict: bool = True,
 ) -> Dict[str, Any]:
     """
-    summary: 兼容读取旧版权重文件与新版完整 checkpoint
-    param model: 待加载权重的模型
-    param checkpoint_path: checkpoint 文件路径
-    param device: 当前设备
-    param optimizer: 可选优化器，用于恢复优化器状态
-    param fallback_start_epoch: 旧版权重文件的默认起始 epoch
-    param fallback_best_val_loss: 旧版权重文件的默认最佳验证损失
-    return: 包含加载信息的字典
+    summary: read file checkpoint
+    param model: model
+    param checkpoint_path: checkpoint filepath
+    param device: current
+    param optimizer: optional,
+    param fallback_start_epoch: file default epoch
+    param fallback_best_val_loss: file default validation
+    param allow_partial_state_dict: strict=False
+    return: dict
     """
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
+        load_state_info = _load_state_dict_flexible(
+            model=model,
+            state_dict=checkpoint["model_state_dict"],
+            allow_partial_state_dict=allow_partial_state_dict,
+        )
 
         optimizer_loaded = False
         if optimizer is not None and "optimizer_state_dict" in checkpoint:
@@ -78,9 +117,15 @@ def load_checkpoint_flexible(
         start_epoch = checkpoint.get("epoch", 0) + 1
         best_val_loss = checkpoint.get("best_val_loss", fallback_best_val_loss)
 
-        print(f"已加载新版完整 checkpoint: {checkpoint_path}")
-        print(f"下次训练将从 epoch {start_epoch} 开始")
-        print(f"optimizer 状态已恢复: {optimizer_loaded}")
+        print(f"Loaded new full checkpoint: {checkpoint_path}")
+        print(f" training epoch {start_epoch} ")
+        print(f"optimizer: {optimizer_loaded}")
+        if load_state_info["partial_load"]:
+            print(
+                "modelarguments strict=False, "
+                f"missing_keys={len(load_state_info['missing_keys'])}, "
+                f"unexpected_keys={len(load_state_info['unexpected_keys'])}"
+            )
 
         return {
             "start_epoch": start_epoch,
@@ -88,14 +133,27 @@ def load_checkpoint_flexible(
             "is_full_checkpoint": True,
             "optimizer_loaded": optimizer_loaded,
             "metadata": checkpoint.get("metadata", {}),
+            "partial_load": load_state_info["partial_load"],
+            "missing_keys": load_state_info["missing_keys"],
+            "unexpected_keys": load_state_info["unexpected_keys"],
         }
 
     if isinstance(checkpoint, dict):
-        model.load_state_dict(checkpoint)
+        load_state_info = _load_state_dict_flexible(
+            model=model,
+            state_dict=checkpoint,
+            allow_partial_state_dict=allow_partial_state_dict,
+        )
 
-        print(f"已加载旧版权重文件: {checkpoint_path}")
-        print("该文件仅包含模型权重，optimizer 状态无法恢复。")
-        print(f"将从 epoch {fallback_start_epoch} 开始继续训练。")
+        print(f"Loaded legacy weights file: {checkpoint_path}")
+        print(" file model, optimizer unable to.")
+        print(f" epoch {fallback_start_epoch} training.")
+        if load_state_info["partial_load"]:
+            print(
+                "modelarguments strict=False, "
+                f"missing_keys={len(load_state_info['missing_keys'])}, "
+                f"unexpected_keys={len(load_state_info['unexpected_keys'])}"
+            )
 
         return {
             "start_epoch": fallback_start_epoch,
@@ -103,17 +161,20 @@ def load_checkpoint_flexible(
             "is_full_checkpoint": False,
             "optimizer_loaded": False,
             "metadata": {},
+            "partial_load": load_state_info["partial_load"],
+            "missing_keys": load_state_info["missing_keys"],
+            "unexpected_keys": load_state_info["unexpected_keys"],
         }
 
-    raise ValueError(f"无法识别的 checkpoint 格式: {checkpoint_path}")
+    raise ValueError(f"Unrecognized checkpoint format: {checkpoint_path}")
 
 
 def save_checkpoint(model: nn.Module, save_path: str) -> None:
     """
-    summary: 保存模型参数
-    param model: 待保存模型
-    param save_path: 保存路径
-    return: 无
+    summary: savemodelarguments
+    param model: savemodel
+    param save_path: savepath
+    return: none
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model.state_dict(), save_path)
@@ -121,10 +182,10 @@ def save_checkpoint(model: nn.Module, save_path: str) -> None:
 
 def peek_checkpoint_metadata(checkpoint_path: str, device: torch.device | str = "cpu") -> Dict[str, Any]:
     """
-    summary: 读取 checkpoint 中的元数据而不恢复模型
-    param checkpoint_path: checkpoint 路径
-    param device: torch.load 使用的 map_location
-    return: 元数据字典
+    summary: read checkpoint model
+    param checkpoint_path: checkpoint path
+    param device: torch.load map_location
+    return: dict
     """
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
@@ -145,20 +206,24 @@ def resolve_model_metadata(
     preprocess_mode: str = DEFAULT_PREPROCESS_MODE,
     amp: bool = DEFAULT_USE_AMP,
     use_mask: bool = DEFAULT_USE_MASK,
+    quantization_mode: str = DEFAULT_QUANTIZATION_MODE,
+    qat_backend: str = DEFAULT_QAT_BACKEND,
 ) -> Dict[str, Any]:
     """
-    summary: 基于 fallback 配置和 checkpoint 元数据解析最终模型配置
-    param checkpoint_path: 可选 checkpoint 路径
-    param device: 读取 checkpoint 时的 map_location
-    param in_channels: fallback 输入通道数
-    param num_classes: fallback 类别数
-    param base_channels: fallback 基础通道数
-    param input_width: fallback 输入宽度
-    param input_height: fallback 输入高度
-    param preprocess_mode: fallback 预处理模式
-    param amp: fallback AMP 开关
-    param use_mask: fallback mask 开关
-    return: 解析后的模型配置元数据
+    summary: fallback checkpoint parse model
+    param checkpoint_path: optional checkpoint path
+    param device: read checkpoint map_location
+    param in_channels: fallback input
+    param num_classes: fallback class
+    param base_channels: fallback
+    param input_width: fallback input
+    param input_height: fallback input
+    param preprocess_mode: fallback process
+    param amp: fallback AMP
+    param use_mask: fallback mask
+    param quantization_mode: fallback quantization
+    param qat_backend: fallback QAT backend
+    return: parse model
     """
     resolved = build_model_metadata(
         in_channels=in_channels,
@@ -169,6 +234,8 @@ def resolve_model_metadata(
         preprocess_mode=preprocess_mode,
         amp=amp,
         use_mask=use_mask,
+        quantization_mode=quantization_mode,
+        qat_backend=qat_backend,
     )
 
     if checkpoint_path is None:
@@ -186,4 +253,6 @@ def resolve_model_metadata(
     resolved["preprocess_mode"] = str(checkpoint_metadata.get("preprocess_mode", resolved["preprocess_mode"]))
     resolved["amp"] = bool(checkpoint_metadata.get("amp", resolved["amp"]))
     resolved["use_mask"] = bool(checkpoint_metadata.get("use_mask", resolved["use_mask"]))
+    resolved["quantization_mode"] = str(checkpoint_metadata.get("quantization_mode", resolved["quantization_mode"]))
+    resolved["qat_backend"] = str(checkpoint_metadata.get("qat_backend", resolved["qat_backend"]))
     return resolved

@@ -18,6 +18,8 @@ class RaspberryPiMetadataTests(unittest.TestCase):
             eye_timestamp_ns=100,
             fpv_timestamp_ns=200,
             screen_uv=(0.4, 0.6),
+            fpv_output_mode="record",
+            recording_active=True,
             tracking_valid=True,
             feature_valid=True,
             feature_mode="iris_only",
@@ -34,6 +36,8 @@ class RaspberryPiMetadataTests(unittest.TestCase):
         payload = packet.to_dict()
         self.assertEqual(payload["screen_uv"], [0.4, 0.6])
         self.assertEqual(payload["calibration_target_uv"], [0.1, 0.1])
+        self.assertEqual(payload["fpv_output_mode"], "record")
+        self.assertTrue(payload["recording_active"])
         self.assertEqual(payload["calibration_state"], "settling")
         self.assertFalse(payload["calibrated"])
 
@@ -42,6 +46,8 @@ class RaspberryPiMetadataTests(unittest.TestCase):
             eye_timestamp_ns=None,
             fpv_timestamp_ns=None,
             screen_uv=None,
+            fpv_output_mode="rtsp",
+            recording_active=False,
             tracking_valid=False,
             feature_valid=False,
             feature_mode="iris_only",
@@ -57,6 +63,8 @@ class RaspberryPiMetadataTests(unittest.TestCase):
 
         line = packet.to_json_line()
         self.assertIn('"calibration_state":"idle"', line)
+        self.assertIn('"fpv_output_mode":"rtsp"', line)
+        self.assertIn('"recording_active":false', line)
         self.assertIn('"sync_stale":true', line)
         self.assertNotIn("\n", line)
 

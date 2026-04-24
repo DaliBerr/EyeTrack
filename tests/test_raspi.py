@@ -24,7 +24,7 @@ class RaspberryPiRuntimeTests(unittest.TestCase):
 
     def test_prepare_eye_tensor_from_yuv420_rejects_mismatched_shape(self) -> None:
         frame = np.zeros((9, 5), dtype=np.uint8)
-        with self.assertRaisesRegex(ValueError, "尺寸异常|模型输入不匹配"):
+        with self.assertRaisesRegex(ValueError, " anomaly|modelinput "):
             prepare_eye_tensor_from_yuv420(frame, input_width=6, input_height=4)
 
     def test_pair_eye_and_fpv_frames_marks_sync_stale(self) -> None:

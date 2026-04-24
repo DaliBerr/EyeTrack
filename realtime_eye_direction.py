@@ -27,7 +27,7 @@ from eyetrack.gaze import (
     advance_calibration_session,
     begin_calibration_session,
     build_empty_gaze_feature_result,
-    build_five_point_calibration_points,
+    build_nine_point_calibration_points,
     cancel_calibration_session,
     extract_gaze_features_from_label_map,
     predict_screen_point,
@@ -68,19 +68,27 @@ USE_AMP = DEFAULT_USE_AMP
 
 IRIS_CLASS_ID = 2
 PUPIL_CLASS_ID = 3
+OUTER_BOUNDARY_CLASS_ID = 1
 KERNEL_SIZE = 3
 IRIS_MIN_AREA = 100
 PUPIL_MIN_AREA = 20
 
-EMA_ALPHA = 0.35
 MAX_VALID_NORM_RADIUS = 0.85
+QUALITY_TRACKER_ALPHA = 0.18
+MIN_TRACKING_CONFIDENCE = 0.22
+MIN_CALIBRATION_CONFIDENCE = 0.30
+KALMAN_PROCESS_NOISE = 0.002
+KALMAN_BASE_MEASUREMENT_NOISE = 0.008
+KALMAN_LOW_CONFIDENCE_NOISE = 0.06
+KALMAN_JUMP_NOISE_SCALE = 0.10
+KALMAN_MAX_COVARIANCE = 1.5
 ARROW_LENGTH = 120
 SHOW_DEBUG_TEXT = True
 USE_MIRROR_VIEW = False
 SCREEN_PREVIEW_SIZE = 220
 STALE_SCREEN_POINT_TIMEOUT_MS = 300
-DEFAULT_CALIBRATION_SETTLE_MS = 500
-DEFAULT_CALIBRATION_CAPTURE_MS = 1000
+DEFAULT_CALIBRATION_SETTLE_MS = 800
+DEFAULT_CALIBRATION_CAPTURE_MS = 1500
 DEFAULT_CALIBRATION_MIN_VALID_FRAMES = 15
 DEFAULT_CALIBRATION_MARGIN = 0.1
 
@@ -88,6 +96,31 @@ ROI_PREVIEW_WIDTH = 220
 ROI_PREVIEW_HEIGHT = 140
 PRED_PREVIEW_WIDTH = 220
 PRED_PREVIEW_HEIGHT = 140
+DEFAULT_DEMO_RECORD_KEY = "v"
+DEMO_RENDER_STATE_IDLE = "idle_calibration"
+DEMO_RENDER_STATE_READY = "ready_to_render"
+DEMO_RENDER_STATE_RENDERING = "rendering"
+DEMO_RENDER_STATE_FINISHED = "finished"
+DEMO_VIDEO_CODEC = "mp4v"
+DEMO_OUTPUT_SUFFIX = "_gaze_demo.mp4"
+DEMO_CALIBRATION_OUTPUT_STEM_SUFFIX = "_calibration"
+DEMO_PANEL_MARGIN = 10
+DEMO_PANEL_GAP = 10
+DEMO_MIN_PANEL_WIDTH = 96
+DEMO_MIN_PANEL_HEIGHT = 60
+DEMO_PANEL_ANCHOR_BOTTOM_LEFT = "bottom_left"
+DEMO_PANEL_ANCHOR_CENTER_LEFT = "center_left"
+DEMO_CENTER_LEFT_PANEL_ANCHOR_U = 0.30
+DEMO_CALIBRATION_RECORD_FPS_FALLBACK = 30.0
+DEMO_GAZE_RING_RADIUS = 18
+DEMO_GAZE_RING_THICKNESS = 4
+DEMO_GAZE_OUTER_RING_RADIUS = 28
+DEMO_GAZE_OUTER_RING_THICKNESS = 2
+DEMO_GAZE_CENTER_RADIUS = 4
+DEMO_GAZE_SHADOW_OFFSET = 1
+DEMO_GAZE_SHADOW_COLOR = (0, 0, 0)
+DEMO_GAZE_VALID_COLOR = (0, 255, 0)
+DEMO_GAZE_INVALID_COLOR = (0, 165, 255)
 
 
 # =========================
@@ -176,28 +209,150 @@ class ROIInteractionState:
         return ROIBox(x1=x1, y1=y1, x2=x2, y2=y2).clip(self.frame_width, self.frame_height)
 
 
-class OnlineEMAFilter:
-    def __init__(self, alpha: float):
-        self.alpha = alpha
-        self.dx: Optional[float] = None
-        self.dy: Optional[float] = None
+class FeatureQualityTracker:
+    def __init__(self, alpha: float = QUALITY_TRACKER_ALPHA):
+        self.alpha = float(np.clip(alpha, 0.01, 0.99))
+        self.area_ema: Optional[float] = None
+        self.feature_x_ema: Optional[float] = None
+        self.feature_y_ema: Optional[float] = None
 
     def reset(self) -> None:
-        self.dx = None
-        self.dy = None
+        self.area_ema = None
+        self.feature_x_ema = None
+        self.feature_y_ema = None
 
-    def update(self, dx: Optional[float], dy: Optional[float], valid: bool) -> Tuple[Optional[float], Optional[float]]:
-        if not valid or dx is None or dy is None:
-            return self.dx, self.dy
+    def compute_confidence(
+        self,
+        geometry_result: GazeFeatureResult,
+        feature_mode: str,
+        feature_x: Optional[float],
+        feature_y: Optional[float],
+        feature_valid: bool,
+        feature_reasons: tuple[str, ...],
+    ) -> float:
+        if not feature_valid or feature_x is None or feature_y is None:
+            return 0.0
 
-        if self.dx is None or self.dy is None:
-            self.dx = dx
-            self.dy = dy
+        iris_area = float(max(geometry_result.iris_geometry.area, 0))
+        area_reference = max(float(IRIS_MIN_AREA) * 2.0, 1.0)
+        area_term = float(np.clip(iris_area / area_reference, 0.0, 1.0))
+
+        if self.area_ema is None:
+            area_stability = 1.0
         else:
-            self.dx = self.alpha * dx + (1.0 - self.alpha) * self.dx
-            self.dy = self.alpha * dy + (1.0 - self.alpha) * self.dy
+            area_delta = abs(iris_area - self.area_ema) / max(self.area_ema, 1.0)
+            area_stability = float(np.exp(-2.5 * area_delta))
 
-        return self.dx, self.dy
+        if self.feature_x_ema is None or self.feature_y_ema is None:
+            motion_stability = 1.0
+        else:
+            motion_delta = float(np.hypot(feature_x - self.feature_x_ema, feature_y - self.feature_y_ema))
+            motion_stability = float(np.exp(-6.0 * motion_delta))
+
+        shape_term = 0.35
+        if geometry_result.iris_geometry.ellipse is not None:
+            major = max(float(geometry_result.iris_geometry.ellipse.major_axis), 1e-6)
+            minor = float(geometry_result.iris_geometry.ellipse.minor_axis)
+            axis_ratio = minor / major
+            shape_term = float(np.clip((axis_ratio - 0.12) / 0.55, 0.0, 1.0))
+
+        normalized_mode = feature_mode.strip().lower()
+        mode_factor = 1.0
+        if normalized_mode == "iris_only" and not geometry_result.iris_outer_valid:
+            mode_factor = 0.65
+
+        reason_penalty = 1.0 / (1.0 + 0.3 * len(feature_reasons))
+        confidence = (0.20 + 0.25 * area_term + 0.25 * area_stability + 0.20 * motion_stability + 0.10 * shape_term)
+        confidence = float(np.clip(confidence * mode_factor * reason_penalty, 0.0, 1.0))
+
+        if self.area_ema is None:
+            self.area_ema = iris_area
+        else:
+            self.area_ema = self.alpha * iris_area + (1.0 - self.alpha) * self.area_ema
+
+        if self.feature_x_ema is None or self.feature_y_ema is None:
+            self.feature_x_ema = float(feature_x)
+            self.feature_y_ema = float(feature_y)
+        else:
+            self.feature_x_ema = self.alpha * float(feature_x) + (1.0 - self.alpha) * self.feature_x_ema
+            self.feature_y_ema = self.alpha * float(feature_y) + (1.0 - self.alpha) * self.feature_y_ema
+
+        return confidence
+
+
+class AdaptiveKalmanFilter2D:
+    def __init__(
+        self,
+        process_noise: float = KALMAN_PROCESS_NOISE,
+        base_measurement_noise: float = KALMAN_BASE_MEASUREMENT_NOISE,
+        low_confidence_noise: float = KALMAN_LOW_CONFIDENCE_NOISE,
+        jump_noise_scale: float = KALMAN_JUMP_NOISE_SCALE,
+        max_covariance: float = KALMAN_MAX_COVARIANCE,
+    ):
+        self.process_noise = float(max(process_noise, 1e-7))
+        self.base_measurement_noise = float(max(base_measurement_noise, 1e-7))
+        self.low_confidence_noise = float(max(low_confidence_noise, 0.0))
+        self.jump_noise_scale = float(max(jump_noise_scale, 0.0))
+        self.max_covariance = float(max(max_covariance, 1e-5))
+
+        self.state_x: Optional[float] = None
+        self.state_y: Optional[float] = None
+        self.var_x: float = self.max_covariance
+        self.var_y: float = self.max_covariance
+        self.last_measurement: Optional[Tuple[float, float]] = None
+
+    def reset(self) -> None:
+        self.state_x = None
+        self.state_y = None
+        self.var_x = self.max_covariance
+        self.var_y = self.max_covariance
+        self.last_measurement = None
+
+    def _predict(self) -> None:
+        if self.state_x is None or self.state_y is None:
+            return
+        self.var_x = min(self.var_x + self.process_noise, self.max_covariance)
+        self.var_y = min(self.var_y + self.process_noise, self.max_covariance)
+
+    @staticmethod
+    def _update_axis(state: float, variance: float, measurement: float, measurement_noise: float) -> Tuple[float, float]:
+        gain = variance / (variance + measurement_noise)
+        next_state = state + gain * (measurement - state)
+        next_variance = (1.0 - gain) * variance
+        return float(next_state), float(next_variance)
+
+    def update(self, dx: Optional[float], dy: Optional[float], valid: bool, confidence: float) -> Tuple[Optional[float], Optional[float]]:
+        self._predict()
+
+        if not valid or dx is None or dy is None:
+            return self.state_x, self.state_y
+
+        measurement_x = float(dx)
+        measurement_y = float(dy)
+
+        if self.state_x is None or self.state_y is None:
+            self.state_x = measurement_x
+            self.state_y = measurement_y
+            self.var_x = self.base_measurement_noise
+            self.var_y = self.base_measurement_noise
+            self.last_measurement = (measurement_x, measurement_y)
+            return self.state_x, self.state_y
+
+        confidence = float(np.clip(confidence, 0.0, 1.0))
+        jump = 0.0
+        if self.last_measurement is not None:
+            jump = float(np.hypot(measurement_x - self.last_measurement[0], measurement_y - self.last_measurement[1]))
+
+        measurement_noise = self.base_measurement_noise
+        measurement_noise += (1.0 - confidence) * self.low_confidence_noise
+        measurement_noise += jump * self.jump_noise_scale
+        measurement_noise = float(np.clip(measurement_noise, 1e-6, 5.0))
+
+        self.state_x, self.var_x = self._update_axis(self.state_x, self.var_x, measurement_x, measurement_noise)
+        self.state_y, self.var_y = self._update_axis(self.state_y, self.var_y, measurement_y, measurement_noise)
+        self.last_measurement = (measurement_x, measurement_y)
+
+        return self.state_x, self.state_y
 
 
 ROI_STATE = ROIInteractionState()
@@ -222,6 +377,38 @@ class RuntimePredictor:
     torch_model: Optional[nn.Module] = None
     onnx_session: Any = None
     onnx_input_name: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class DemoVideoSourceInfo:
+    path: str
+    width: int
+    height: int
+    fps: float
+    frame_count: int
+
+
+@dataclass(frozen=True)
+class DemoGazeSample:
+    timestamp_s: float
+    screen_uv: Optional[Tuple[float, float]]
+    tracking_valid: bool
+
+
+@dataclass(frozen=True)
+class PreviewPanelSpec:
+    image: np.ndarray
+    label: str
+    desired_size: Tuple[int, int]
+    use_gray: bool
+
+
+@dataclass(frozen=True)
+class PreviewPanelPlacement:
+    x: int
+    y: int
+    width: int
+    height: int
 
 
 # =========================
@@ -348,6 +535,7 @@ def extract_eye_geometry_from_label_map(pred_label_map: np.ndarray) -> GazeFeatu
     return extract_gaze_features_from_label_map(
         pred_label_map=pred_label_map,
         valid_mask=None,
+        outer_boundary_class_id=OUTER_BOUNDARY_CLASS_ID,
         iris_class_id=IRIS_CLASS_ID,
         pupil_class_id=PUPIL_CLASS_ID,
         kernel_size=KERNEL_SIZE,
@@ -479,6 +667,7 @@ def put_debug_text(
     selected_feature_x: Optional[float],
     selected_feature_y: Optional[float],
     selected_feature_valid: bool,
+    selected_feature_confidence: float,
     selected_feature_reasons: tuple[str, ...],
     preprocess_meta: Optional[ResizeMeta],
     smoothed_dx: Optional[float],
@@ -487,6 +676,7 @@ def put_debug_text(
     camera_resolution: Tuple[int, int],
     selected_roi: Optional[ROIBox],
     calibration_session: Optional[CalibrationSession],
+    static_boundary_ellipse: Optional[EllipseResult],
     screen_uv: Optional[Tuple[float, float]],
     tracking_valid: bool,
     status_message: str,
@@ -527,13 +717,16 @@ def put_debug_text(
         f"feature_x: {selected_feature_x}",
         f"feature_y: {selected_feature_y}",
         f"feature_valid: {selected_feature_valid}",
+        f"feature_conf: {selected_feature_confidence:.3f}",
         f"feature_invalid: {feature_reason_text}",
+        f"conf_gate: track>={MIN_TRACKING_CONFIDENCE:.2f} cal>={MIN_CALIBRATION_CONFIDENCE:.2f}",
         f"sm_dx  : {smoothed_dx}",
         f"sm_dy  : {smoothed_dy}",
         f"invalid: {invalid_reason_text}",
         f"calibration_state: {calibration_state}",
         f"calibration_step : {calibration_step}",
         f"calibrated: {calibrated}",
+        f"static_boundary: {static_boundary_ellipse is not None}",
         f"screen_uv: {format_optional_pair(screen_uv)}",
         f"tracking_valid: {tracking_valid}",
         f"message: {status_message}",
@@ -579,6 +772,7 @@ def build_visualization(
     selected_feature_x: Optional[float],
     selected_feature_y: Optional[float],
     selected_feature_valid: bool,
+    selected_feature_confidence: float,
     selected_feature_reasons: tuple[str, ...],
     preprocess_meta: Optional[ResizeMeta],
     selected_roi: Optional[ROIBox],
@@ -587,6 +781,7 @@ def build_visualization(
     fps: float,
     camera_resolution: Tuple[int, int],
     calibration_session: Optional[CalibrationSession],
+    static_boundary_ellipse: Optional[EllipseResult],
     calibration_points: list,
     screen_uv: Optional[Tuple[float, float]],
     tracking_valid: bool,
@@ -596,6 +791,7 @@ def build_visualization(
 
     vis = draw_ellipse_on_frame(vis, geometry_result.iris_geometry.ellipse, preprocess_meta, selected_roi, (0, 255, 0), 2)
     vis = draw_ellipse_on_frame(vis, geometry_result.pupil_geometry.ellipse, preprocess_meta, selected_roi, (0, 0, 255), 2)
+    vis = draw_ellipse_on_frame(vis, static_boundary_ellipse, preprocess_meta, selected_roi, (255, 128, 0), 1)
 
     vis = draw_center_on_frame(vis, geometry_result.iris_geometry.center_x, geometry_result.iris_geometry.center_y, preprocess_meta, selected_roi, (0, 255, 0), 4)
     vis = draw_center_on_frame(vis, geometry_result.pupil_geometry.center_x, geometry_result.pupil_geometry.center_y, preprocess_meta, selected_roi, (0, 0, 255), 4)
@@ -629,6 +825,7 @@ def build_visualization(
             selected_feature_x,
             selected_feature_y,
             selected_feature_valid,
+            selected_feature_confidence,
             selected_feature_reasons,
             preprocess_meta,
             smoothed_dx,
@@ -637,6 +834,7 @@ def build_visualization(
             camera_resolution,
             selected_roi,
             calibration_session,
+            static_boundary_ellipse,
             screen_uv,
             tracking_valid,
             status_message,
@@ -645,11 +843,485 @@ def build_visualization(
     return vis
 
 
-def parse_args() -> argparse.Namespace:
+def resolve_demo_output_path(demo_fpv_video: str, demo_output: Optional[str]) -> str:
+    if demo_output is not None and str(demo_output).strip() != "":
+        return str(Path(demo_output).expanduser().resolve())
+
+    source_path = Path(demo_fpv_video).expanduser().resolve()
+    return str(source_path.with_name(f"{source_path.stem}{DEMO_OUTPUT_SUFFIX}"))
+
+
+def append_output_stem_suffix(output_path: str, stem_suffix: str) -> str:
+    resolved_output_path = Path(output_path).expanduser().resolve()
+    return str(
+        resolved_output_path.with_name(
+            f"{resolved_output_path.stem}{stem_suffix}{resolved_output_path.suffix or '.mp4'}"
+        )
+    )
+
+
+def resolve_demo_calibration_output_path(demo_output_path: str) -> str:
+    return append_output_stem_suffix(demo_output_path, DEMO_CALIBRATION_OUTPUT_STEM_SUFFIX)
+
+
+def inspect_demo_video_source(video_path: str) -> tuple[cv2.VideoCapture, DemoVideoSourceInfo]:
+    source_path = Path(video_path).expanduser().resolve()
+    cap = cv2.VideoCapture(str(source_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"无法打开演示 FPV 视频: {source_path}")
+
+    ret, frame = cap.read()
+    if not ret or frame is None or frame.size == 0:
+        cap.release()
+        raise RuntimeError(f"演示 FPV 视频无法读取首帧: {source_path}")
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if width <= 0 or height <= 0:
+        height, width = frame.shape[:2]
+
+    fps = float(cap.get(cv2.CAP_PROP_FPS))
+    frame_count = int(max(cap.get(cv2.CAP_PROP_FRAME_COUNT), 0.0))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    if width <= 0 or height <= 0:
+        cap.release()
+        raise RuntimeError(f"演示 FPV 视频尺寸无效: {source_path}")
+    if fps <= 0.0:
+        cap.release()
+        raise RuntimeError(f"演示 FPV 视频 FPS 无效: {source_path}")
+
+    return cap, DemoVideoSourceInfo(
+        path=str(source_path),
+        width=width,
+        height=height,
+        fps=fps,
+        frame_count=frame_count,
+    )
+
+
+def resolve_demo_render_state(
+    current_state: str,
+    demo_source_info: Optional[DemoVideoSourceInfo],
+    selected_roi: Optional[ROIBox],
+    calibration_session: Optional[CalibrationSession],
+    rendering_active: bool,
+) -> str:
+    if rendering_active:
+        return DEMO_RENDER_STATE_RENDERING
+
+    ready = bool(
+        demo_source_info is not None
+        and selected_roi is not None
+        and selected_roi.is_valid()
+        and calibration_session is not None
+        and calibration_session.is_calibrated
+    )
+    if not ready:
+        return DEMO_RENDER_STATE_IDLE
+    if current_state == DEMO_RENDER_STATE_FINISHED:
+        return DEMO_RENDER_STATE_FINISHED
+    return DEMO_RENDER_STATE_READY
+
+
+def validate_demo_render_start_request(
+    *,
+    demo_source_info: Optional[DemoVideoSourceInfo],
+    selected_roi: Optional[ROIBox],
+    calibration_session: Optional[CalibrationSession],
+    rendering_active: bool,
+) -> Optional[str]:
+    if rendering_active:
+        return "Demo rendering is already active."
+    if demo_source_info is None:
+        return "Cannot start demo rendering because the FPV source video is unavailable."
+    if selected_roi is None or not selected_roi.is_valid():
+        return "Please select a valid ROI before starting demo rendering."
+    if calibration_session is None or not calibration_session.is_calibrated:
+        return "Demo rendering requires a completed calibration."
+    return None
+
+
+def create_mp4_video_writer(output_path: str, width: int, height: int, fps: float) -> cv2.VideoWriter:
+    resolved_output_path = Path(output_path).expanduser().resolve()
+    resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(resolved_output_path),
+        cv2.VideoWriter_fourcc(*DEMO_VIDEO_CODEC),
+        float(fps),
+        (int(width), int(height)),
+    )
+    if not writer.isOpened():
+        writer.release()
+        raise RuntimeError(
+            f"无法创建演示视频输出: {resolved_output_path} "
+            f"({int(width)}x{int(height)}@{float(fps):.2f}fps, codec={DEMO_VIDEO_CODEC})"
+        )
+    return writer
+
+
+def create_demo_video_writer(source_info: DemoVideoSourceInfo, output_path: str) -> cv2.VideoWriter:
+    return create_mp4_video_writer(
+        output_path=output_path,
+        width=source_info.width,
+        height=source_info.height,
+        fps=source_info.fps,
+    )
+
+
+def start_demo_rendering(
+    source_capture: cv2.VideoCapture,
+    source_info: DemoVideoSourceInfo,
+    output_path: str,
+) -> cv2.VideoWriter:
+    source_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    return create_demo_video_writer(source_info=source_info, output_path=output_path)
+
+
+def close_demo_writer(writer: Optional[cv2.VideoWriter]) -> Optional[str]:
+    if writer is None:
+        return None
+
+    try:
+        writer.release()
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def finalize_optional_video_recording(
+    writer: Optional[cv2.VideoWriter],
+    output_path: Optional[str],
+    result_label: str,
+) -> tuple[Optional[cv2.VideoWriter], Optional[str]]:
+    if writer is None:
+        return None, None
+
+    close_error = close_demo_writer(writer)
+    if close_error is not None:
+        return None, f"{result_label}时 writer 收尾失败: {close_error}"
+
+    output_name = "output.mp4" if output_path is None else Path(output_path).name
+    return None, f"{result_label}: {output_name}"
+
+
+def build_demo_preview_panels(
+    roi_gray_preview: Optional[np.ndarray],
+    pred_label_map: Optional[np.ndarray],
+) -> list[PreviewPanelSpec]:
+    panels: list[PreviewPanelSpec] = []
+    if roi_gray_preview is not None:
+        panels.append(
+            PreviewPanelSpec(
+                image=roi_gray_preview,
+                label="ROI Gray",
+                desired_size=(ROI_PREVIEW_WIDTH, ROI_PREVIEW_HEIGHT),
+                use_gray=True,
+            )
+        )
+    if pred_label_map is not None:
+        panels.append(
+            PreviewPanelSpec(
+                image=(pred_label_map * 85).astype(np.uint8),
+                label="Segmentation",
+                desired_size=(PRED_PREVIEW_WIDTH, PRED_PREVIEW_HEIGHT),
+                use_gray=True,
+            )
+        )
+    return panels
+
+
+def compute_demo_panel_layout(
+    frame_width: int,
+    frame_height: int,
+    panels: list[PreviewPanelSpec],
+    margin: int = DEMO_PANEL_MARGIN,
+    gap: int = DEMO_PANEL_GAP,
+    anchor: str = DEMO_PANEL_ANCHOR_BOTTOM_LEFT,
+    prefer_horizontal: bool = True,
+) -> list[PreviewPanelPlacement]:
+    if len(panels) == 0:
+        return []
+
+    available_width = max(int(frame_width) - 2 * int(margin), 1)
+    available_height = max(int(frame_height) - 2 * int(margin), 1)
+    widths = [max(int(panel.desired_size[0]), 1) for panel in panels]
+    heights = [max(int(panel.desired_size[1]), 1) for panel in panels]
+
+    def _scaled_sizes(scale: float) -> tuple[list[int], list[int]]:
+        scaled_widths = [max(1, int(round(width * scale))) for width in widths]
+        scaled_heights = [max(1, int(round(height * scale))) for height in heights]
+        return scaled_widths, scaled_heights
+
+    def _resolve_group_x(group_width: int) -> int:
+        if anchor == DEMO_PANEL_ANCHOR_CENTER_LEFT:
+            anchor_center_x = int(round(frame_width * DEMO_CENTER_LEFT_PANEL_ANCHOR_U))
+            return int(np.clip(anchor_center_x - group_width // 2, margin, max(frame_width - margin - group_width, margin)))
+        return int(margin)
+
+    horizontal_total_width = sum(widths) + max(len(widths) - 1, 0) * gap
+    horizontal_max_height = max(heights)
+    horizontal_scale = min(
+        1.0,
+        available_width / float(max(horizontal_total_width, 1)),
+        available_height / float(max(horizontal_max_height, 1)),
+    )
+    horizontal_widths, horizontal_heights = _scaled_sizes(horizontal_scale)
+    horizontal_is_large_enough = (
+        min(horizontal_widths) >= DEMO_MIN_PANEL_WIDTH and min(horizontal_heights) >= DEMO_MIN_PANEL_HEIGHT
+    )
+
+    vertical_total_height = sum(heights) + max(len(heights) - 1, 0) * gap
+    vertical_max_width = max(widths)
+    vertical_scale = min(
+        1.0,
+        available_width / float(max(vertical_max_width, 1)),
+        available_height / float(max(vertical_total_height, 1)),
+    )
+    vertical_widths, vertical_heights = _scaled_sizes(vertical_scale)
+
+    use_horizontal = bool(prefer_horizontal)
+    if not prefer_horizontal:
+        use_horizontal = False
+    elif horizontal_total_width > available_width or horizontal_max_height > available_height:
+        use_horizontal = horizontal_is_large_enough
+
+    placements: list[PreviewPanelPlacement] = []
+    if use_horizontal:
+        current_x = _resolve_group_x(sum(horizontal_widths) + max(len(horizontal_widths) - 1, 0) * gap)
+        group_height = max(horizontal_heights)
+        if anchor == DEMO_PANEL_ANCHOR_CENTER_LEFT:
+            base_y = int(np.clip((frame_height - group_height) // 2, margin, max(frame_height - margin - group_height, margin)))
+        else:
+            base_y = frame_height - margin - group_height
+        for width, height in zip(horizontal_widths, horizontal_heights):
+            if anchor == DEMO_PANEL_ANCHOR_CENTER_LEFT:
+                panel_y = base_y + (group_height - height) // 2
+            else:
+                panel_y = frame_height - margin - height
+            placements.append(PreviewPanelPlacement(x=current_x, y=panel_y, width=width, height=height))
+            current_x += width + gap
+        return placements
+
+    group_width = max(vertical_widths)
+    group_x = _resolve_group_x(group_width)
+    total_height = sum(vertical_heights) + max(len(vertical_heights) - 1, 0) * gap
+    if anchor == DEMO_PANEL_ANCHOR_CENTER_LEFT:
+        current_y = int(np.clip((frame_height - total_height) // 2, margin, max(frame_height - margin - total_height, margin)))
+        for width, height in zip(vertical_widths, vertical_heights):
+            panel_x = group_x + (group_width - width) // 2
+            placements.append(PreviewPanelPlacement(x=panel_x, y=current_y, width=width, height=height))
+            current_y += height + gap
+        return placements
+
+    current_y = frame_height - margin
+    for width, height in zip(vertical_widths, vertical_heights):
+        current_y -= height
+        placements.append(PreviewPanelPlacement(x=group_x, y=current_y, width=width, height=height))
+        current_y -= gap
+    return placements
+
+
+def build_demo_gaze_sample(
+    timestamp_s: float,
+    screen_uv: Optional[Tuple[float, float]],
+    tracking_valid: bool,
+) -> DemoGazeSample:
+    normalized_uv = None if screen_uv is None else (float(screen_uv[0]), float(screen_uv[1]))
+    return DemoGazeSample(
+        timestamp_s=max(float(timestamp_s), 0.0),
+        screen_uv=normalized_uv,
+        tracking_valid=bool(tracking_valid),
+    )
+
+
+def interpolate_screen_uv(
+    start_uv: Optional[Tuple[float, float]],
+    end_uv: Optional[Tuple[float, float]],
+    alpha: float,
+) -> Optional[Tuple[float, float]]:
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    if start_uv is None and end_uv is None:
+        return None
+    if start_uv is None or end_uv is None:
+        return start_uv if alpha < 0.5 else end_uv
+    return (
+        float((1.0 - alpha) * start_uv[0] + alpha * end_uv[0]),
+        float((1.0 - alpha) * start_uv[1] + alpha * end_uv[1]),
+    )
+
+
+def resolve_interpolated_demo_gaze(
+    previous_sample: Optional[DemoGazeSample],
+    current_sample: Optional[DemoGazeSample],
+    target_timestamp_s: float,
+) -> tuple[Optional[Tuple[float, float]], bool]:
+    if previous_sample is None and current_sample is None:
+        return None, False
+    if previous_sample is None:
+        return current_sample.screen_uv, current_sample.tracking_valid
+    if current_sample is None:
+        return previous_sample.screen_uv, previous_sample.tracking_valid
+
+    if current_sample.timestamp_s <= previous_sample.timestamp_s:
+        return current_sample.screen_uv, current_sample.tracking_valid
+    if target_timestamp_s <= previous_sample.timestamp_s:
+        return previous_sample.screen_uv, previous_sample.tracking_valid
+    if target_timestamp_s >= current_sample.timestamp_s:
+        return current_sample.screen_uv, current_sample.tracking_valid
+
+    alpha = (float(target_timestamp_s) - previous_sample.timestamp_s) / max(
+        current_sample.timestamp_s - previous_sample.timestamp_s,
+        1e-6,
+    )
+    screen_uv = interpolate_screen_uv(previous_sample.screen_uv, current_sample.screen_uv, alpha)
+    tracking_valid = previous_sample.tracking_valid if alpha < 0.5 else current_sample.tracking_valid
+    return screen_uv, tracking_valid
+
+
+def map_demo_screen_uv_to_frame(
+    screen_uv: Tuple[float, float],
+    width: int,
+    height: int,
+) -> Tuple[int, int]:
+    px = int(round(np.clip(screen_uv[0], 0.0, 1.0) * max(width - 1, 0)))
+    py = int(round(np.clip(screen_uv[1], 0.0, 1.0) * max(height - 1, 0)))
+    return px, py
+
+
+def draw_demo_gaze_overlay(
+    frame: np.ndarray,
+    screen_uv: Optional[Tuple[float, float]],
+    tracking_valid: bool,
+) -> np.ndarray:
+    output = frame.copy()
+    if screen_uv is None:
+        return output
+
+    height, width = output.shape[:2]
+    px, py = map_demo_screen_uv_to_frame(screen_uv, width=width, height=height)
+    color = DEMO_GAZE_VALID_COLOR if tracking_valid else DEMO_GAZE_INVALID_COLOR
+    shadow_center = (px + DEMO_GAZE_SHADOW_OFFSET, py + DEMO_GAZE_SHADOW_OFFSET)
+
+    cv2.circle(
+        output,
+        shadow_center,
+        DEMO_GAZE_OUTER_RING_RADIUS,
+        DEMO_GAZE_SHADOW_COLOR,
+        DEMO_GAZE_OUTER_RING_THICKNESS + 2,
+        cv2.LINE_AA,
+    )
+    cv2.circle(
+        output,
+        shadow_center,
+        DEMO_GAZE_RING_RADIUS,
+        DEMO_GAZE_SHADOW_COLOR,
+        DEMO_GAZE_RING_THICKNESS + 2,
+        cv2.LINE_AA,
+    )
+    cv2.circle(
+        output,
+        shadow_center,
+        DEMO_GAZE_CENTER_RADIUS + 2,
+        DEMO_GAZE_SHADOW_COLOR,
+        -1,
+        cv2.LINE_AA,
+    )
+
+    cv2.circle(
+        output,
+        (px, py),
+        DEMO_GAZE_OUTER_RING_RADIUS,
+        color,
+        DEMO_GAZE_OUTER_RING_THICKNESS,
+        cv2.LINE_AA,
+    )
+    cv2.circle(
+        output,
+        (px, py),
+        DEMO_GAZE_RING_RADIUS,
+        color,
+        DEMO_GAZE_RING_THICKNESS,
+        cv2.LINE_AA,
+    )
+    cv2.circle(
+        output,
+        (px, py),
+        DEMO_GAZE_CENTER_RADIUS,
+        color,
+        -1,
+        cv2.LINE_AA,
+    )
+    return output
+
+
+def compose_demo_output_frame(
+    fpv_frame_bgr: np.ndarray,
+    screen_uv: Optional[Tuple[float, float]],
+    tracking_valid: bool,
+    roi_gray_preview: Optional[np.ndarray],
+    pred_label_map: Optional[np.ndarray],
+    panel_anchor: str = DEMO_PANEL_ANCHOR_BOTTOM_LEFT,
+    prefer_horizontal_panels: bool = True,
+) -> np.ndarray:
+    output = draw_demo_gaze_overlay(
+        fpv_frame_bgr,
+        screen_uv=screen_uv,
+        tracking_valid=tracking_valid,
+    )
+    panels = build_demo_preview_panels(roi_gray_preview=roi_gray_preview, pred_label_map=pred_label_map)
+    placements = compute_demo_panel_layout(
+        frame_width=output.shape[1],
+        frame_height=output.shape[0],
+        panels=panels,
+        anchor=panel_anchor,
+        prefer_horizontal=prefer_horizontal_panels,
+    )
+    for panel, placement in zip(panels, placements):
+        output = draw_preview_panel(
+            output,
+            panel.image,
+            panel.label,
+            (placement.x, placement.y),
+            (placement.width, placement.height),
+            use_gray=panel.use_gray,
+        )
+    return output
+
+
+def compose_calibration_output_frame(
+    calibration_canvas_bgr: np.ndarray,
+    roi_gray_preview: Optional[np.ndarray],
+    pred_label_map: Optional[np.ndarray],
+) -> np.ndarray:
+    output = calibration_canvas_bgr.copy()
+    panels = build_demo_preview_panels(roi_gray_preview=roi_gray_preview, pred_label_map=pred_label_map)
+    placements = compute_demo_panel_layout(
+        frame_width=output.shape[1],
+        frame_height=output.shape[0],
+        panels=panels,
+        anchor=DEMO_PANEL_ANCHOR_CENTER_LEFT,
+        prefer_horizontal=False,
+    )
+    for panel, placement in zip(panels, placements):
+        output = draw_preview_panel(
+            output,
+            panel.image,
+            panel.label,
+            (placement.x, placement.y),
+            (placement.width, placement.height),
+            use_gray=panel.use_gray,
+        )
+    return output
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="实时眼动方向验证")
     parser.add_argument("--model_path", type=str, default=None, help="待加载的模型路径，支持 .pth 与 .onnx")
     parser.add_argument("--checkpoint_path", type=str, default=CHECKPOINT_PATH, help="兼容旧参数名；若未传 --model_path，则使用该路径")
     parser.add_argument("--camera_index", type=int, default=CAMERA_INDEX, help="摄像头索引")
+    parser.add_argument("--demo_fpv_video", type=str, default=None, help="启用 PC 演示录制模式时使用的 FPV 视频路径")
+    parser.add_argument("--demo_output", type=str, default=None, help="演示录制模式导出路径；默认输出到 FPV 视频同目录")
     parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
     parser.add_argument("--onnx_backend", type=str, default="cpu", choices=["cpu", "nnapi"], help="ONNX Runtime backend，仅在 .onnx 模型时生效")
     parser.add_argument("--feature_mode", type=str, choices=["pupil_iris", "iris_only"], default="pupil_iris", help="实时校准与跟踪使用的特征模式")
@@ -663,7 +1335,7 @@ def parse_args() -> argparse.Namespace:
     amp_group.add_argument("--no-amp", dest="amp", action="store_false", help="强制禁用 AMP")
     parser.set_defaults(amp=None)
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def resolve_runtime_model_config(model_path: str, amp_override: Optional[bool], onnx_backend: str) -> RuntimeModelConfig:
@@ -760,6 +1432,11 @@ def main() -> None:
     args = parse_args()
     model_path = args.model_path if args.model_path is not None else args.checkpoint_path
     runtime_config = resolve_runtime_model_config(model_path=model_path, amp_override=args.amp, onnx_backend=args.onnx_backend)
+    demo_mode_enabled = args.demo_fpv_video is not None
+    demo_output_path = None if not demo_mode_enabled else resolve_demo_output_path(args.demo_fpv_video, args.demo_output)
+    demo_calibration_output_path = None if demo_output_path is None else resolve_demo_calibration_output_path(demo_output_path)
+    demo_source_capture: Optional[cv2.VideoCapture] = None
+    demo_source_info: Optional[DemoVideoSourceInfo] = None
 
     device = resolve_device(args.device)
     amp_enabled = runtime_config.runtime_type == "pytorch" and runtime_config.use_amp and device.type == "cuda"
@@ -774,20 +1451,42 @@ def main() -> None:
 
     camera_width, camera_height, camera_fps = configure_camera(cap)
     print(f"camera resolution: {camera_width}x{camera_height}, fps={camera_fps:.1f}")
+    if demo_mode_enabled:
+        demo_source_capture, demo_source_info = inspect_demo_video_source(args.demo_fpv_video)
+        print(
+            "demo fpv:",
+            f"{demo_source_info.width}x{demo_source_info.height}, fps={demo_source_info.fps:.2f}, "
+            f"frames={demo_source_info.frame_count}, path={demo_source_info.path}",
+        )
+        print("demo output:", demo_output_path)
+        print("demo calibration output:", demo_calibration_output_path)
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(WINDOW_NAME, handle_mouse)
 
-    ema_filter = OnlineEMAFilter(alpha=EMA_ALPHA)
+    quality_tracker = FeatureQualityTracker(alpha=QUALITY_TRACKER_ALPHA)
+    kalman_filter = AdaptiveKalmanFilter2D()
     calibration_session: Optional[CalibrationSession] = None
     calibration_window_open = False
-    calibration_points = build_five_point_calibration_points(args.calibration_margin)
+    calibration_points = build_nine_point_calibration_points(args.calibration_margin)
     displayed_screen_uv: Optional[Tuple[float, float]] = None
     last_valid_screen_ts_ms: Optional[float] = None
     tracking_valid = False
-    status_message = "请选择 ROI，然后按 s 开始五点校准。"
+    status_message = "请选择 ROI，然后按 s 开始九点校准。"
+    if demo_mode_enabled:
+        status_message += f" 校准完成后按 {DEFAULT_DEMO_RECORD_KEY} 从头导出演示视频。"
     last_roi_revision = ROI_STATE.roi_revision
     prev_time = time.time()
+    demo_render_state = DEMO_RENDER_STATE_IDLE
+    demo_writer: Optional[cv2.VideoWriter] = None
+    demo_calibration_writer: Optional[cv2.VideoWriter] = None
+    demo_calibration_recording_blocked = False
+    demo_render_start_monotonic: Optional[float] = None
+    demo_rendered_frames = 0
+    demo_preview_frame: Optional[np.ndarray] = None
+    calibration_preview_frame: Optional[np.ndarray] = None
+    demo_previous_gaze_sample: Optional[DemoGazeSample] = None
+    demo_current_gaze_sample: Optional[DemoGazeSample] = None
 
     try:
         while True:
@@ -803,7 +1502,26 @@ def main() -> None:
 
             if ROI_STATE.roi_revision != last_roi_revision:
                 last_roi_revision = ROI_STATE.roi_revision
-                ema_filter.reset()
+                stop_error = close_demo_writer(demo_writer)
+                if stop_error is not None:
+                    print(f"warning: failed to finalize demo writer during ROI update: {stop_error}")
+                demo_writer = None
+                demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+                    demo_calibration_writer,
+                    demo_calibration_output_path,
+                    "校准阶段视频已停止",
+                )
+                if calibration_video_message is not None:
+                    print(calibration_video_message)
+                demo_calibration_recording_blocked = False
+                demo_render_start_monotonic = None
+                demo_rendered_frames = 0
+                demo_preview_frame = None
+                demo_previous_gaze_sample = None
+                demo_current_gaze_sample = None
+                demo_render_state = DEMO_RENDER_STATE_IDLE
+                quality_tracker.reset()
+                kalman_filter.reset()
                 calibration_session = None
                 calibration_window_open = False
                 destroy_window(CALIBRATION_WINDOW_NAME)
@@ -811,16 +1529,20 @@ def main() -> None:
                 last_valid_screen_ts_ms = None
                 tracking_valid = False
                 status_message = "ROI 已更新，校准已失效。"
+                if calibration_video_message is not None:
+                    status_message = f"{status_message} {calibration_video_message}"
 
             selected_roi = ROI_STATE.active_roi
             geometry_result = build_empty_geometry_result()
             selected_feature_x: Optional[float] = None
             selected_feature_y: Optional[float] = None
             selected_feature_valid = False
+            selected_feature_confidence = 0.0
             selected_feature_reasons: tuple[str, ...] = tuple()
             preprocess_meta: Optional[ResizeMeta] = None
             roi_gray_preview: Optional[np.ndarray] = None
             pred_label_map: Optional[np.ndarray] = None
+            calibration_preview_frame = None
 
             if selected_roi is not None and selected_roi.is_valid():
                 roi_frame = selected_roi.crop(frame)
@@ -833,15 +1555,36 @@ def main() -> None:
                     pred_label_map = predict_label_map(predictor, input_tensor, device, use_amp=amp_enabled)
                     geometry_result = extract_eye_geometry_from_label_map(pred_label_map)
 
+            calibration_model_for_feature = calibration_session.model if calibration_session is not None and calibration_session.is_calibrated else None
+            static_boundary_ellipse = calibration_model_for_feature.static_boundary_ellipse if calibration_model_for_feature is not None else None
+
             selected_feature_x, selected_feature_y, selected_feature_valid, selected_feature_reasons = resolve_tracking_features(
                 geometry_result,
                 feature_mode=args.feature_mode,
+                reference_boundary_ellipse=static_boundary_ellipse,
             )
 
-            smoothed_dx, smoothed_dy = ema_filter.update(
+            selected_feature_confidence = quality_tracker.compute_confidence(
+                geometry_result=geometry_result,
+                feature_mode=args.feature_mode,
+                feature_x=selected_feature_x,
+                feature_y=selected_feature_y,
+                feature_valid=selected_feature_valid,
+                feature_reasons=selected_feature_reasons,
+            )
+
+            smoothed_dx, smoothed_dy = kalman_filter.update(
                 selected_feature_x,
                 selected_feature_y,
                 selected_feature_valid,
+                selected_feature_confidence,
+            )
+
+            calibration_feature_valid = bool(
+                selected_feature_valid
+                and selected_feature_confidence >= MIN_CALIBRATION_CONFIDENCE
+                and smoothed_dx is not None
+                and smoothed_dy is not None
             )
 
             now_ms = time.time() * 1000.0
@@ -853,7 +1596,9 @@ def main() -> None:
                     now_ms=now_ms,
                     feature_dx=smoothed_dx,
                     feature_dy=smoothed_dy,
-                    feature_valid=bool(selected_feature_valid and smoothed_dx is not None and smoothed_dy is not None),
+                    feature_valid=calibration_feature_valid,
+                    feature_confidence=selected_feature_confidence,
+                    boundary_ellipse=geometry_result.outer_boundary_geometry.ellipse,
                 )
 
                 if calibration_session.state != previous_state:
@@ -865,12 +1610,30 @@ def main() -> None:
                         calibration_points = calibration_session.points
                         calibration_window_open = False
                         destroy_window(CALIBRATION_WINDOW_NAME)
-                        status_message = "五点校准完成。"
+                        status_message = "九点校准完成。"
+                        demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+                            demo_calibration_writer,
+                            demo_calibration_output_path,
+                            "校准阶段视频已保存",
+                        )
+                        demo_calibration_recording_blocked = False
+                        if calibration_video_message is not None:
+                            status_message = f"{status_message} {calibration_video_message}"
+                        if demo_mode_enabled:
+                            status_message += f" 按 {DEFAULT_DEMO_RECORD_KEY} 从头导出演示视频。"
                         print(status_message)
                     elif calibration_session.state == "failed":
                         calibration_window_open = False
                         destroy_window(CALIBRATION_WINDOW_NAME)
                         status_message = calibration_session.failure_reason or "校准失败。"
+                        demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+                            demo_calibration_writer,
+                            demo_calibration_output_path,
+                            "校准阶段视频已保存",
+                        )
+                        demo_calibration_recording_blocked = False
+                        if calibration_video_message is not None:
+                            status_message = f"{status_message} {calibration_video_message}"
                         print(status_message)
 
             if calibration_session is not None and calibration_session.is_active:
@@ -878,14 +1641,47 @@ def main() -> None:
                     ensure_fullscreen_window(CALIBRATION_WINDOW_NAME)
                     calibration_window_open = True
                 calibration_canvas = build_calibration_canvas((camera_width, camera_height), calibration_session)
-                cv2.imshow(CALIBRATION_WINDOW_NAME, calibration_canvas)
+                calibration_preview_frame = calibration_canvas
+                if demo_mode_enabled:
+                    calibration_preview_frame = compose_calibration_output_frame(
+                        calibration_canvas_bgr=calibration_canvas,
+                        roi_gray_preview=roi_gray_preview,
+                        pred_label_map=pred_label_map,
+                    )
+                    if (
+                        demo_calibration_writer is None
+                        and not demo_calibration_recording_blocked
+                        and demo_calibration_output_path is not None
+                    ):
+                        calibration_record_fps = float(camera_fps) if camera_fps > 1.0 else DEMO_CALIBRATION_RECORD_FPS_FALLBACK
+                        try:
+                            demo_calibration_writer = create_mp4_video_writer(
+                                output_path=demo_calibration_output_path,
+                                width=calibration_preview_frame.shape[1],
+                                height=calibration_preview_frame.shape[0],
+                                fps=calibration_record_fps,
+                            )
+                            print(f"开始导出校准阶段视频: {Path(demo_calibration_output_path).name}")
+                        except Exception as exc:
+                            demo_calibration_writer = None
+                            demo_calibration_recording_blocked = True
+                            print(f"warning: 无法开始校准阶段视频导出: {exc}")
+                    if demo_calibration_writer is not None:
+                        demo_calibration_writer.write(calibration_preview_frame)
+                cv2.imshow(CALIBRATION_WINDOW_NAME, calibration_preview_frame)
             elif calibration_window_open:
                 destroy_window(CALIBRATION_WINDOW_NAME)
                 calibration_window_open = False
 
             calibration_model = calibration_session.model if calibration_session is not None and calibration_session.is_calibrated else None
             tracking_valid = False
-            if calibration_model is not None and selected_feature_valid and smoothed_dx is not None and smoothed_dy is not None:
+            tracking_gate_valid = bool(
+                selected_feature_valid
+                and selected_feature_confidence >= MIN_TRACKING_CONFIDENCE
+                and smoothed_dx is not None
+                and smoothed_dy is not None
+            )
+            if calibration_model is not None and tracking_gate_valid:
                 predicted_screen_uv = predict_screen_point(calibration_model, smoothed_dx, smoothed_dy)
                 if predicted_screen_uv is not None:
                     displayed_screen_uv = predicted_screen_uv
@@ -905,6 +1701,27 @@ def main() -> None:
             now = time.time()
             fps = 1.0 / max(now - prev_time, 1e-6)
             prev_time = now
+            demo_render_state = resolve_demo_render_state(
+                current_state=demo_render_state,
+                demo_source_info=demo_source_info,
+                selected_roi=selected_roi,
+                calibration_session=calibration_session,
+                rendering_active=demo_writer is not None,
+            )
+            demo_render_elapsed_s: Optional[float] = None
+            if demo_mode_enabled and demo_writer is not None and demo_render_start_monotonic is not None:
+                demo_render_elapsed_s = max(time.monotonic() - demo_render_start_monotonic, 0.0)
+                latest_gaze_sample = build_demo_gaze_sample(
+                    timestamp_s=demo_render_elapsed_s,
+                    screen_uv=displayed_screen_uv,
+                    tracking_valid=tracking_valid,
+                )
+                if demo_current_gaze_sample is None:
+                    demo_previous_gaze_sample = latest_gaze_sample
+                    demo_current_gaze_sample = latest_gaze_sample
+                else:
+                    demo_previous_gaze_sample = demo_current_gaze_sample
+                    demo_current_gaze_sample = latest_gaze_sample
 
             vis = build_visualization(
                 frame_bgr=frame,
@@ -913,6 +1730,7 @@ def main() -> None:
                 selected_feature_x=selected_feature_x,
                 selected_feature_y=selected_feature_y,
                 selected_feature_valid=selected_feature_valid,
+                selected_feature_confidence=selected_feature_confidence,
                 selected_feature_reasons=selected_feature_reasons,
                 preprocess_meta=preprocess_meta,
                 selected_roi=selected_roi,
@@ -921,6 +1739,7 @@ def main() -> None:
                 fps=fps,
                 camera_resolution=(camera_width, camera_height),
                 calibration_session=calibration_session,
+                static_boundary_ellipse=static_boundary_ellipse,
                 calibration_points=calibration_points,
                 screen_uv=displayed_screen_uv,
                 tracking_valid=tracking_valid,
@@ -936,24 +1755,188 @@ def main() -> None:
                 preview_y = vis.shape[0] - PRED_PREVIEW_HEIGHT - 10
                 vis = draw_preview_panel(vis, pred_preview, "Segmentation", (20 + ROI_PREVIEW_WIDTH, preview_y), (PRED_PREVIEW_WIDTH, PRED_PREVIEW_HEIGHT), use_gray=True)
 
+            if demo_mode_enabled and demo_writer is not None and demo_source_capture is not None and demo_source_info is not None:
+                if demo_render_start_monotonic is None:
+                    demo_render_start_monotonic = time.monotonic()
+                if demo_render_elapsed_s is None:
+                    demo_render_elapsed_s = max(time.monotonic() - demo_render_start_monotonic, 0.0)
+
+                target_frame_count = max(int(demo_render_elapsed_s * demo_source_info.fps) + 1, 1)
+                if demo_source_info.frame_count > 0:
+                    target_frame_count = min(target_frame_count, demo_source_info.frame_count)
+                frames_to_render = max(target_frame_count - demo_rendered_frames, 0)
+
+                while frames_to_render > 0:
+                    demo_ret, demo_frame = demo_source_capture.read()
+                    if not demo_ret or demo_frame is None or demo_frame.size == 0:
+                        stop_error = close_demo_writer(demo_writer)
+                        demo_writer = None
+                        demo_render_start_monotonic = None
+                        demo_rendered_frames = 0
+                        demo_previous_gaze_sample = None
+                        demo_current_gaze_sample = None
+                        demo_render_state = DEMO_RENDER_STATE_FINISHED
+                        if stop_error is not None:
+                            status_message = f"演示视频导出结束，但 writer 收尾失败: {stop_error}"
+                        else:
+                            status_message = f"演示视频导出已完成: {Path(demo_output_path).name}"
+                        print(status_message)
+                        break
+
+                    frame_timestamp_s = demo_rendered_frames / float(max(demo_source_info.fps, 1e-6))
+                    interpolated_screen_uv, interpolated_tracking_valid = resolve_interpolated_demo_gaze(
+                        previous_sample=demo_previous_gaze_sample,
+                        current_sample=demo_current_gaze_sample,
+                        target_timestamp_s=frame_timestamp_s,
+                    )
+                    demo_preview_frame = compose_demo_output_frame(
+                        fpv_frame_bgr=demo_frame,
+                        screen_uv=interpolated_screen_uv,
+                        tracking_valid=interpolated_tracking_valid,
+                        roi_gray_preview=roi_gray_preview,
+                        pred_label_map=pred_label_map,
+                    )
+                    demo_writer.write(demo_preview_frame)
+                    demo_rendered_frames += 1
+                    frames_to_render -= 1
+
+                    if demo_source_info.frame_count > 0 and demo_rendered_frames >= demo_source_info.frame_count:
+                        stop_error = close_demo_writer(demo_writer)
+                        demo_writer = None
+                        demo_render_start_monotonic = None
+                        demo_rendered_frames = 0
+                        demo_previous_gaze_sample = None
+                        demo_current_gaze_sample = None
+                        demo_render_state = DEMO_RENDER_STATE_FINISHED
+                        if stop_error is not None:
+                            status_message = f"演示视频导出结束，但 writer 收尾失败: {stop_error}"
+                        else:
+                            status_message = f"演示视频导出已完成: {Path(demo_output_path).name}"
+                        print(status_message)
+                        break
+
+                if demo_preview_frame is not None:
+                    vis = demo_preview_frame
+
             cv2.imshow(WINDOW_NAME, vis)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
+                stop_error = close_demo_writer(demo_writer)
+                if stop_error is not None:
+                    print(f"warning: failed to finalize demo writer during quit: {stop_error}")
+                demo_writer = None
+                demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+                    demo_calibration_writer,
+                    demo_calibration_output_path,
+                    "校准阶段视频已停止",
+                )
+                if calibration_video_message is not None:
+                    print(calibration_video_message)
+                demo_calibration_recording_blocked = False
+                demo_previous_gaze_sample = None
+                demo_current_gaze_sample = None
                 break
+            elif demo_mode_enabled and key == ord(DEFAULT_DEMO_RECORD_KEY):
+                start_error = validate_demo_render_start_request(
+                    demo_source_info=demo_source_info,
+                    selected_roi=selected_roi,
+                    calibration_session=calibration_session,
+                    rendering_active=demo_writer is not None,
+                )
+                if demo_writer is not None:
+                    stop_error = close_demo_writer(demo_writer)
+                    demo_writer = None
+                    demo_render_start_monotonic = None
+                    demo_rendered_frames = 0
+                    demo_render_state = DEMO_RENDER_STATE_FINISHED
+                    demo_previous_gaze_sample = None
+                    demo_current_gaze_sample = None
+                    if stop_error is not None:
+                        status_message = f"停止演示导出时 writer 收尾失败: {stop_error}"
+                    else:
+                        status_message = f"演示视频导出已停止: {Path(demo_output_path).name}"
+                    print(status_message)
+                elif start_error is not None:
+                    status_message = start_error
+                    print(status_message)
+                else:
+                    try:
+                        demo_writer = start_demo_rendering(
+                            source_capture=demo_source_capture,
+                            source_info=demo_source_info,
+                            output_path=demo_output_path,
+                        )
+                        demo_render_start_monotonic = time.monotonic()
+                        demo_rendered_frames = 0
+                        demo_preview_frame = None
+                        initial_gaze_sample = build_demo_gaze_sample(
+                            timestamp_s=0.0,
+                            screen_uv=displayed_screen_uv,
+                            tracking_valid=tracking_valid,
+                        )
+                        demo_previous_gaze_sample = initial_gaze_sample
+                        demo_current_gaze_sample = initial_gaze_sample
+                        demo_render_state = DEMO_RENDER_STATE_RENDERING
+                        status_message = f"开始导出演示视频: {Path(demo_output_path).name}"
+                    except Exception as exc:
+                        demo_writer = None
+                        demo_render_start_monotonic = None
+                        demo_rendered_frames = 0
+                        demo_previous_gaze_sample = None
+                        demo_current_gaze_sample = None
+                        demo_render_state = DEMO_RENDER_STATE_FINISHED
+                        status_message = f"无法开始演示视频导出: {exc}"
+                    print(status_message)
             elif key == ord("r"):
-                ema_filter.reset()
+                stop_error = close_demo_writer(demo_writer)
+                if stop_error is not None:
+                    print(f"warning: failed to finalize demo writer during reset: {stop_error}")
+                demo_writer = None
+                demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+                    demo_calibration_writer,
+                    demo_calibration_output_path,
+                    "校准阶段视频已停止",
+                )
+                demo_calibration_recording_blocked = False
+                demo_render_start_monotonic = None
+                demo_rendered_frames = 0
+                demo_preview_frame = None
+                demo_previous_gaze_sample = None
+                demo_current_gaze_sample = None
+                demo_render_state = DEMO_RENDER_STATE_IDLE
+                quality_tracker.reset()
+                kalman_filter.reset()
                 calibration_session = None
                 calibration_window_open = False
                 destroy_window(CALIBRATION_WINDOW_NAME)
                 displayed_screen_uv = None
                 last_valid_screen_ts_ms = None
                 tracking_valid = False
-                status_message = "已重置 EMA 与校准状态。"
+                status_message = "已重置滤波与校准状态。"
+                if calibration_video_message is not None:
+                    status_message = f"{status_message} {calibration_video_message}"
                 print(status_message)
             elif key == ord("c"):
+                stop_error = close_demo_writer(demo_writer)
+                if stop_error is not None:
+                    print(f"warning: failed to finalize demo writer during ROI clear: {stop_error}")
+                demo_writer = None
+                demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+                    demo_calibration_writer,
+                    demo_calibration_output_path,
+                    "校准阶段视频已停止",
+                )
+                demo_calibration_recording_blocked = False
+                demo_render_start_monotonic = None
+                demo_rendered_frames = 0
+                demo_preview_frame = None
+                demo_previous_gaze_sample = None
+                demo_current_gaze_sample = None
+                demo_render_state = DEMO_RENDER_STATE_IDLE
                 ROI_STATE.clear()
-                ema_filter.reset()
+                quality_tracker.reset()
+                kalman_filter.reset()
                 calibration_session = None
                 calibration_window_open = False
                 destroy_window(CALIBRATION_WINDOW_NAME)
@@ -961,19 +1944,41 @@ def main() -> None:
                 last_valid_screen_ts_ms = None
                 tracking_valid = False
                 status_message = "已清除 ROI，校准已失效。"
+                if calibration_video_message is not None:
+                    status_message = f"{status_message} {calibration_video_message}"
                 print(status_message)
             elif key == ord("s"):
                 if selected_roi is None or not selected_roi.is_valid():
                     status_message = "请先框选有效 ROI，再开始校准。"
                     print(status_message)
                 else:
-                    ema_filter.reset()
+                    stop_error = close_demo_writer(demo_writer)
+                    if stop_error is not None:
+                        print(f"warning: failed to finalize demo writer before calibration: {stop_error}")
+                    demo_writer = None
+                    demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+                        demo_calibration_writer,
+                        demo_calibration_output_path,
+                        "校准阶段视频已停止",
+                    )
+                    if calibration_video_message is not None:
+                        print(calibration_video_message)
+                    demo_calibration_recording_blocked = False
+                    demo_render_start_monotonic = None
+                    demo_rendered_frames = 0
+                    demo_preview_frame = None
+                    demo_previous_gaze_sample = None
+                    demo_current_gaze_sample = None
+                    demo_render_state = DEMO_RENDER_STATE_IDLE
+                    quality_tracker.reset()
+                    kalman_filter.reset()
                     calibration_session = begin_calibration_session(
                         now_ms=now_ms,
                         settle_ms=args.calibration_settle_ms,
                         capture_ms=args.calibration_capture_ms,
                         min_valid_frames=args.calibration_min_valid_frames,
                         margin=args.calibration_margin,
+                        point_pattern="nine",
                     )
                     calibration_points = calibration_session.points
                     displayed_screen_uv = None
@@ -985,6 +1990,22 @@ def main() -> None:
                     print(status_message)
             elif key == ord("x"):
                 if calibration_session is not None and calibration_session.is_active:
+                    stop_error = close_demo_writer(demo_writer)
+                    if stop_error is not None:
+                        print(f"warning: failed to finalize demo writer during calibration cancel: {stop_error}")
+                    demo_writer = None
+                    demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+                        demo_calibration_writer,
+                        demo_calibration_output_path,
+                        "校准阶段视频已停止",
+                    )
+                    demo_calibration_recording_blocked = False
+                    demo_render_start_monotonic = None
+                    demo_rendered_frames = 0
+                    demo_preview_frame = None
+                    demo_previous_gaze_sample = None
+                    demo_current_gaze_sample = None
+                    demo_render_state = DEMO_RENDER_STATE_IDLE
                     calibration_session = cancel_calibration_session(calibration_session, "已取消当前校准。")
                     calibration_window_open = False
                     destroy_window(CALIBRATION_WINDOW_NAME)
@@ -992,8 +2013,25 @@ def main() -> None:
                     last_valid_screen_ts_ms = None
                     tracking_valid = False
                     status_message = calibration_session.failure_reason or "已取消当前校准。"
+                    if calibration_video_message is not None:
+                        status_message = f"{status_message} {calibration_video_message}"
                     print(status_message)
     finally:
+        stop_error = close_demo_writer(demo_writer)
+        if stop_error is not None:
+            print(f"warning: failed to finalize demo writer during shutdown: {stop_error}")
+        demo_calibration_writer, calibration_video_message = finalize_optional_video_recording(
+            demo_calibration_writer,
+            demo_calibration_output_path,
+            "校准阶段视频已停止",
+        )
+        if calibration_video_message is not None:
+            print(calibration_video_message)
+        demo_previous_gaze_sample = None
+        demo_current_gaze_sample = None
+        demo_calibration_recording_blocked = False
+        if demo_source_capture is not None:
+            demo_source_capture.release()
         cap.release()
         destroy_window(CALIBRATION_WINDOW_NAME)
         cv2.destroyAllWindows()

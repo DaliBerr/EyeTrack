@@ -46,7 +46,7 @@ def build_calibration_canvas(size: Tuple[int, int], session: CalibrationSession)
     cv2.line(canvas, (px, py - 40), (px, py + 40), color, 1)
 
     lines = [
-        "Five-point calibration",
+        f"{len(session.points)}-point calibration",
         f"point: {session.calibration_step}",
         f"phase: {session.state}",
         f"valid samples: {len(session.current_point_samples)}/{session.min_valid_frames}",
