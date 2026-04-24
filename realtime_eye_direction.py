@@ -49,7 +49,7 @@ from eyetrack.training.checkpoints import load_checkpoint_flexible, resolve_mode
 # 配置区
 # =========================
 CHECKPOINT_PATH = DEFAULT_CHECKPOINT_PATH
-CAMERA_INDEX = 0
+CAMERA_INDEX = 2
 WINDOW_NAME = "Realtime Eye Direction Demo"
 CALIBRATION_WINDOW_NAME = "Realtime Gaze Calibration"
 
