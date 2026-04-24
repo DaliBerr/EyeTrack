@@ -5,10 +5,10 @@ import torch
 
 def compute_pixel_accuracy(pred: torch.Tensor, target: torch.Tensor) -> float:
     """
-    summary: 计算全图像素准确率
-    param pred: 预测类别图，shape 为 BxHxW
-    param target: 真实类别图，shape 为 BxHxW
-    return: 准确率
+    summary: image
+    param pred: predictionclass, shape BxHxW
+    param target: class, shape BxHxW
+    return:
     """
     correct = (pred == target).float().sum().item()
     total = target.numel()
@@ -17,11 +17,11 @@ def compute_pixel_accuracy(pred: torch.Tensor, target: torch.Tensor) -> float:
 
 def compute_masked_pixel_accuracy(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> float:
     """
-    summary: 计算 mask 区域内的像素准确率
-    param pred: 预测类别图，shape 为 BxHxW
-    param target: 真实类别图，shape 为 BxHxW
-    param mask: 有效区域掩码，shape 为 BxHxW
-    return: mask 区域内准确率
+    summary: mask
+    param pred: predictionclass, shape BxHxW
+    param target: class, shape BxHxW
+    param mask: valid mask, shape BxHxW
+    return: mask
     """
     valid = mask.bool()
     valid_count = valid.sum().item()
@@ -40,12 +40,12 @@ def compute_dice_per_class(
     ignore_background: bool = False
 ) -> Dict[int, float]:
     """
-    summary: 计算每个类别的 Dice
-    param pred: 预测类别图，shape 为 BxHxW
-    param target: 真实类别图，shape 为 BxHxW
-    param num_classes: 类别数量
-    param ignore_background: 是否忽略背景类
-    return: 每个类别对应的 Dice 字典
+    summary: class Dice
+    param pred: predictionclass, shape BxHxW
+    param target: class, shape BxHxW
+    param num_classes: classcount
+    param ignore_background:
+    return: class Dice dict
     """
     dice_dict = {}
     start_class = 1 if ignore_background else 0
@@ -69,9 +69,9 @@ def compute_dice_per_class(
 
 def average_dict_values(dict_list: list[Dict[int, float]]) -> Dict[int, float]:
     """
-    summary: 对多个字典中的同名键取平均
-    param dict_list: 字典列表
-    return: 平均后的字典
+    summary: dict
+    param dict_list: dictlist
+    return: dict
     """
     if len(dict_list) == 0:
         return {}

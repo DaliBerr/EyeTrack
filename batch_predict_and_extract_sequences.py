@@ -5,29 +5,37 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from extract_geometry_from_segmentation import process_prediction_directory
+from eyetrack.config import (
+    DEFAULT_BASE_CHANNELS,
+    DEFAULT_IN_CHANNELS,
+    DEFAULT_INPUT_HEIGHT,
+    DEFAULT_INPUT_WIDTH,
+    DEFAULT_NUM_CLASSES,
+    DEFAULT_USE_AMP,
+)
 from eyetrack.workflows.predict import run_prediction_to_npy
 
 
 def natural_key(text: str) -> List[Any]:
     """
-    summary: 生成自然排序键
-    param text: 输入字符串
-    return: 可用于排序的键列表
+    summary:
+    param text: input
+    return: list
     """
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
 
 
 def list_sequence_dirs(sequence_root: str, sequence_glob: str) -> List[Path]:
     """
-    summary: 列出所有需要处理的序列目录
-    param sequence_root: 序列根目录
-    param sequence_glob: 序列匹配模式
-    return: 排序后的序列目录列表
+    summary: process sequencedirectory
+    param sequence_root: sequence directory
+    param sequence_glob: sequence
+    return: sequencedirectorylist
     """
     root_path = Path(sequence_root)
 
     if not root_path.exists():
-        raise FileNotFoundError(f"找不到序列根目录: {root_path}")
+        raise FileNotFoundError(f"not foundsequence directory: {root_path}")
 
     sequence_dirs = []
     for path in root_path.iterdir():
@@ -40,10 +48,10 @@ def list_sequence_dirs(sequence_root: str, sequence_glob: str) -> List[Path]:
 
 def resolve_mask_dir(mask_root: Optional[str], sequence_name: str) -> Optional[str]:
     """
-    summary: 解析当前序列对应的有效区域目录
-    param mask_root: mask 根目录
-    param sequence_name: 当前序列名
-    return: 若存在则返回 mask 目录，否则返回 None
+    summary: parsecurrentsequence valid directory
+    param mask_root: mask directory
+    param sequence_name: currentsequence
+    return: return mask directory, return None
     """
     if mask_root is None:
         return None
@@ -63,9 +71,12 @@ def process_all_sequences(
     mask_root: Optional[str] = None,
     batch_size: int = 1,
     num_workers: int = 0,
-    in_channels: int = 1,
-    num_classes: int = 4,
-    base_channels: int = 32,
+    in_channels: int = DEFAULT_IN_CHANNELS,
+    num_classes: int = DEFAULT_NUM_CLASSES,
+    base_channels: int = DEFAULT_BASE_CHANNELS,
+    input_width: int = DEFAULT_INPUT_WIDTH,
+    input_height: int = DEFAULT_INPUT_HEIGHT,
+    use_amp: bool = DEFAULT_USE_AMP,
     device: str = "auto",
     iris_class_id: int = 2,
     pupil_class_id: int = 3,
@@ -77,37 +88,37 @@ def process_all_sequences(
     skip_existing: bool = False,
 ) -> None:
     """
-    summary: 批量对所有 S 序列执行预测并提取几何参数
-    param sequence_root: S 序列根目录
-    param checkpoint_path: 模型 checkpoint 路径
-    param output_root: 批量输出根目录
-    param sequence_glob: 序列匹配模式
-    param mask_root: 可选 mask 根目录
-    param batch_size: 推理批大小
-    param num_workers: DataLoader 进程数
-    param in_channels: 模型输入通道数
-    param num_classes: 模型输出类别数
-    param base_channels: U-Net 基础通道数
-    param device: 运行设备
-    param iris_class_id: iris 类别编号
-    param pupil_class_id: pupil 类别编号
-    param kernel_size: 形态学核大小
-    param iris_min_area: iris 最小面积阈值
-    param pupil_min_area: pupil 最小面积阈值
-    param save_overlay: 是否保存叠加图
-    param save_clean_masks: 是否保存清理后二值图
-    param skip_existing: 若结果已存在是否跳过
-    return: 无
+    summary: batch S sequence prediction arguments
+    param sequence_root: S sequence directory
+    param checkpoint_path: model checkpoint path
+    param output_root: batchoutput directory
+    param sequence_glob: sequence
+    param mask_root: optional mask directory
+    param batch_size: inferencebatch
+    param num_workers: DataLoader
+    param in_channels: modelinput
+    param num_classes: modeloutputclass
+    param base_channels: U-Net
+    param device:
+    param iris_class_id: iris class
+    param pupil_class_id: pupil class
+    param kernel_size:
+    param iris_min_area: iris minimum threshold
+    param pupil_min_area: pupil minimum threshold
+    param save_overlay: save
+    param save_clean_masks: save
+    param skip_existing:
+    return: none
     """
     sequence_dirs = list_sequence_dirs(sequence_root=sequence_root, sequence_glob=sequence_glob)
 
     if len(sequence_dirs) == 0:
-        raise RuntimeError(f"没有找到匹配的序列目录: root={sequence_root}, glob={sequence_glob}")
+        raise RuntimeError(f" sequencedirectory: root={sequence_root}, glob={sequence_glob}")
 
     output_root_path = Path(output_root)
     output_root_path.mkdir(parents=True, exist_ok=True)
 
-    print(f"共找到 {len(sequence_dirs)} 个序列待处理。")
+    print(f" {len(sequence_dirs)} sequence process.")
 
     for index, sequence_dir in enumerate(sequence_dirs, start=1):
         sequence_name = sequence_dir.name
@@ -119,10 +130,10 @@ def process_all_sequences(
         mask_dir = resolve_mask_dir(mask_root=mask_root, sequence_name=sequence_name)
 
         if skip_existing and output_csv.exists():
-            print(f"\n[{index}/{len(sequence_dirs)}] 跳过 {sequence_name}，已存在: {output_csv}")
+            print(f"\n[{index}/{len(sequence_dirs)}] {sequence_name},: {output_csv}")
             continue
 
-        print(f"\n[{index}/{len(sequence_dirs)}] 开始处理序列: {sequence_name}")
+        print(f"\n[{index}/{len(sequence_dirs)}] processsequence: {sequence_name}")
         print(f"image_dir: {sequence_dir}")
         print(f"pred_dir : {pred_dir}")
         print(f"csv_path : {output_csv}")
@@ -140,6 +151,9 @@ def process_all_sequences(
             in_channels=in_channels,
             num_classes=num_classes,
             base_channels=base_channels,
+            input_width=input_width,
+            input_height=input_height,
+            use_amp=use_amp,
             device=device,
         )
 
@@ -159,49 +173,53 @@ def process_all_sequences(
             save_clean_masks=save_clean_masks,
         )
 
-    print(f"\n全部序列处理完成，输出根目录: {output_root_path}")
+    print(f"\n sequenceprocesscompleted, output directory: {output_root_path}")
 
 
 def parse_args() -> argparse.Namespace:
     """
-    summary: 解析命令行参数
-    param 无: 无
-    return: 参数对象
+    summary: parseCLIarguments
+    param none: none
+    return: arguments
     """
-    parser = argparse.ArgumentParser(description="批量对所有 S 序列执行分割预测并提取 geometry")
+    parser = argparse.ArgumentParser(description="batch S sequence prediction geometry")
 
-    parser.add_argument("--sequence_root", type=str, required=True, help="包含 S_0、S_1 等序列目录的根目录")
-    parser.add_argument("--checkpoint_path", type=str, required=True, help="模型 checkpoint 路径")
-    parser.add_argument("--output_root", type=str, required=True, help="批量输出根目录")
+    parser.add_argument("--sequence_root", type=str, required=True, help=" S_0, S_1 sequencedirectory directory")
+    parser.add_argument("--checkpoint_path", type=str, required=True, help="model checkpoint path")
+    parser.add_argument("--output_root", type=str, required=True, help="batchoutput directory")
 
-    parser.add_argument("--sequence_glob", type=str, default="S_*", help="序列匹配模式，默认 S_*")
-    parser.add_argument("--mask_root", type=str, default=None, help="可选 mask 根目录，若提供则使用 mask_root/序列名")
-    parser.add_argument("--skip_existing", action="store_true", help="若 geometry.csv 已存在则跳过该序列")
+    parser.add_argument("--sequence_glob", type=str, default="S_*", help="sequence, default S_*")
+    parser.add_argument("--mask_root", type=str, default=None, help="optional mask directory, mask_root/sequence ")
+    parser.add_argument("--skip_existing", action="store_true", help=" geometry.csv sequence")
 
-    parser.add_argument("--batch_size", type=int, default=1, help="推理批大小")
-    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader 进程数")
-    parser.add_argument("--in_channels", type=int, default=1, help="模型输入通道数")
-    parser.add_argument("--num_classes", type=int, default=4, help="模型输出类别数")
-    parser.add_argument("--base_channels", type=int, default=32, help="U-Net 基础通道数")
-    parser.add_argument("--device", type=str, default="auto", help="运行设备: auto/cpu/cuda")
+    parser.add_argument("--batch_size", type=int, default=1, help="inferencebatch ")
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader ")
+    parser.add_argument("--in_channels", type=int, default=DEFAULT_IN_CHANNELS, help="modelinput ")
+    parser.add_argument("--num_classes", type=int, default=DEFAULT_NUM_CLASSES, help="modeloutputclass ")
+    parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS, help="U-Net ")
+    parser.add_argument("--input_width", type=int, default=DEFAULT_INPUT_WIDTH, help="modelinput ")
+    parser.add_argument("--input_height", type=int, default=DEFAULT_INPUT_HEIGHT, help="modelinput ")
+    parser.add_argument("--amp", action="store_true", default=DEFAULT_USE_AMP, help="enable CUDA AMP inference")
+    parser.add_argument("--no-amp", action="store_false", dest="amp", help="disable CUDA AMP inference")
+    parser.add_argument("--device", type=str, default="auto", help=": auto/cpu/cuda")
 
-    parser.add_argument("--iris_class_id", type=int, default=2, help="iris 类别编号")
-    parser.add_argument("--pupil_class_id", type=int, default=3, help="pupil 类别编号")
-    parser.add_argument("--kernel_size", type=int, default=3, help="形态学核大小")
-    parser.add_argument("--iris_min_area", type=int, default=100, help="iris 最小面积阈值")
-    parser.add_argument("--pupil_min_area", type=int, default=20, help="pupil 最小面积阈值")
+    parser.add_argument("--iris_class_id", type=int, default=2, help="iris class ")
+    parser.add_argument("--pupil_class_id", type=int, default=3, help="pupil class ")
+    parser.add_argument("--kernel_size", type=int, default=3, help=" ")
+    parser.add_argument("--iris_min_area", type=int, default=100, help="iris minimum threshold")
+    parser.add_argument("--pupil_min_area", type=int, default=20, help="pupil minimum threshold")
 
-    parser.add_argument("--save_overlay", action="store_true", help="是否保存叠加图")
-    parser.add_argument("--save_clean_masks", action="store_true", help="是否保存清理后二值图")
+    parser.add_argument("--save_overlay", action="store_true", help=" save ")
+    parser.add_argument("--save_clean_masks", action="store_true", help=" save ")
 
     return parser.parse_args()
 
 
 def main() -> None:
     """
-    summary: 主函数，批量执行预测和 geometry 提取
-    param 无: 无
-    return: 无
+    summary: main function, batch prediction geometry
+    param none: none
+    return: none
     """
     args = parse_args()
 
@@ -216,6 +234,9 @@ def main() -> None:
         in_channels=args.in_channels,
         num_classes=args.num_classes,
         base_channels=args.base_channels,
+        input_width=args.input_width,
+        input_height=args.input_height,
+        use_amp=args.amp,
         device=args.device,
         iris_class_id=args.iris_class_id,
         pupil_class_id=args.pupil_class_id,

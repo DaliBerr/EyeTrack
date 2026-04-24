@@ -1,0 +1,18 @@
+# Python packages required to run realtime_eye_direction_pi.py on Raspberry Pi.
+#
+# Install Raspberry Pi OS system packages first (not managed by pip):
+#   sudo apt install -y python3-picamera2 python3-opencv python3-gi \
+#     gir1.2-gst-rtsp-server-1.0 gstreamer1.0-tools \
+#     gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+#     gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+#
+# Notes:
+# - cv2, picamera2, libcamera bindings and gi are expected from apt packages above.
+# - torch and Pillow are currently required transitively by
+#   eyetrack/deployment/onnx_tools.py module-level imports.
+
+numpy>=1.26,<3
+onnx>=1.16,<2
+onnxruntime>=1.20,<2
+Pillow>=10,<13
+torch>=2.2

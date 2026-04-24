@@ -3,7 +3,7 @@ from eyetrack.training.checkpoints import (
     save_checkpoint,
     save_full_checkpoint,
 )
-from eyetrack.workflows.train import main, print_metrics, set_seed
+from eyetrack.workflows.train import main, print_metrics, run_training, set_seed
 from eyetrack.workflows.visualize import run_visualization_only
 
 __all__ = [
@@ -11,6 +11,7 @@ __all__ = [
     "main",
     "print_metrics",
     "run_visualization_only",
+    "run_training",
     "save_checkpoint",
     "save_full_checkpoint",
     "set_seed",
@@ -18,11 +19,5 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    run_visualization_only(
-        root_dir=r"D:\Code\DataSet\OpenEDS\openEDS\openEDS",
-        checkpoint_path="./checkpoints/best_unet_openeds.pth",
-        save_dir="./vis_val",
-        batch_size=6,
-        num_workers=0,
-        num_samples=12,
-    )
+    main()
+    
